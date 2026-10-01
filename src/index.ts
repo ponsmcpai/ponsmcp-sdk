@@ -195,6 +195,8 @@ export class PonsMCPClient {
   }
 }
 
+export { payForResource, parse402, type ResourcePayment } from './resource.js';
+
 // re-exports
 export { CHAIN };
 export { tokenName, tokenSymbol, tokenDecimals, totalSupply, balanceOf } from './erc20.js';

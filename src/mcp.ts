@@ -7,9 +7,10 @@ import { CHAIN, rpc, hexToBigInt, unitToString, isAddress } from './chain.js';
 import { tokenName, tokenSymbol, tokenDecimals, totalSupply, balanceOf } from './erc20.js';
 import { ponsPairs, ponsBest, tokenPairs } from './dexscreener.js';
 import { ponsLaunchInfo } from './pons.js';
-import { PonsMCPClient } from './index.js';
+import { ponsV2LaunchRecord, ponsV2ConfigCount, ponsV2SnipeTaxBps, PONS_V2_FACTORY, PONS_V2_LAUNCH_AND_BUY } from './ponsv2.js';
+import { PonsMCPClient, payForResource } from './index.js';
 
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
 
 const TOOLS = [
   {
@@ -38,6 +39,27 @@ const TOOLS = [
       type: 'object',
       properties: { token: { type: 'string', description: 'pons launch-token contract address (0x...)' } },
       required: ['token'], additionalProperties: false,
+    },
+  },
+  {
+    name: 'pons_v2_launch',
+    description: 'Read a pons v2 launch record from the factory: deployer, paired token, pool fee, supply, restrictions end block. Read-only; does not launch anything.',
+    inputSchema: {
+      type: 'object',
+      properties: { token: { type: 'string', description: 'pons v2 launch-token address (0x...)' } },
+      required: ['token'], additionalProperties: false,
+    },
+  },
+  {
+    name: 'pons_v2_snipe_tax',
+    description: 'Read the decaying opening snipe tax (bps) a pons v2 curve would charge a specific recipient right now. Keyed on the recipient per pons docs. Read-only.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        curve: { type: 'string', description: 'pons v2 curve address (0x...)' },
+        recipient: { type: 'string', description: 'wallet that would receive the buy (0x...)' },
+      },
+      required: ['curve', 'recipient'], additionalProperties: false,
     },
   },
   {
@@ -77,6 +99,18 @@ const TOOLS = [
         waitMs: { type: 'number', description: 'Max ms to wait for receipt (default 30000)' },
       },
       required: ['payTo', 'amountUsd'],
+    },
+  },
+  {
+    name: 'pons_pay_resource',
+    description: 'Fetch an HTTP resource that answers 402 PAYMENT-REQUIRED, parse the price and recipient, and settle exactly that price in USDG on Robinhood Chain with full policy checks. Nothing broadcasts unless the 402 parses. Requires PONSMCP_PRIVATE_KEY env.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'http(s) URL of the 402-gated resource' },
+        waitMs: { type: 'number', description: 'Max ms to wait for receipt (default 30000)' },
+      },
+      required: ['url'],
     },
   },
   {
@@ -140,6 +174,13 @@ async function callTool(name: string, args: Record<string, any>): Promise<unknow
         top5: pairs.slice(0, 5).map((p) => ({ pair: `${p.base}/${p.quote}`, dex: p.dex, priceUsd: p.priceUsd, liquidityUsd: p.liquidityUsd, change24h: p.change24h, url: p.url })),
       };
     }
+    case 'pons_v2_launch': {
+      return ponsV2LaunchRecord(String(args.token ?? ''));
+    }
+    case 'pons_v2_snipe_tax': {
+      const bps = await ponsV2SnipeTaxBps(String(args.curve ?? ''), String(args.recipient ?? ''));
+      return { curve: String(args.curve).toLowerCase(), recipient: String(args.recipient).toLowerCase(), snipeTaxBps: bps, verdict: bps === 0 ? 'exempt' : 'wait for decay', factory: PONS_V2_FACTORY, launchAndBuyRouter: PONS_V2_LAUNCH_AND_BUY, note: 'read-only intelligence; PonsMCP does not launch or snipe' };
+    }
     case 'pons_token_info': {
       const t = String(args.token ?? '');
       if (!isAddress(t)) throw new Error(`invalid token address: ${t}`);
@@ -176,6 +217,12 @@ async function callTool(name: string, args: Record<string, any>): Promise<unknow
       if (!/^0x[0-9a-fA-F]{64}$/.test(h)) throw new Error(`invalid tx hash: ${h}`);
       const client = new PonsMCPClient();
       return client.txStatus(h);
+    }
+    case 'pons_pay_resource': {
+      const url = String(args.url ?? '');
+      if (!/^https?:\/\//i.test(url)) throw new Error(`invalid resource URL: ${url}`);
+      const client = new PonsMCPClient({ privateKey: process.env.PONSMCP_PRIVATE_KEY });
+      return payForResource(client, url, { waitMs: args.waitMs ? Number(args.waitMs) : undefined });
     }
     default:
       throw new Error(`unknown tool: ${name}`);
