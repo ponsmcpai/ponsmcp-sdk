@@ -1,6 +1,6 @@
 # Tool reference
 
-PonsMCP currently exposes nine MCP tools.
+PonsMCP currently exposes eleven MCP tools.
 
 | Tool | Input | Result |
 |---|---|---|
@@ -12,6 +12,9 @@ PonsMCP currently exposes nine MCP tools.
 | `pons_balance` | optional `token` | configured agent wallet balance; requires `PONSMCP_PRIVATE_KEY` |
 | `pons_quote` | `amountUsd` | USD decimal amount converted to six-decimal USDG settlement units; no transaction |
 | `pons_pay` | `payTo`, `amountUsd`, optional `waitMs` | policy decision, broadcast attempt, and receipt result; requires private key |
+| `pons_pay_resource` | `url`, optional `waitMs` | fetch a 402 resource, parse the price, settle exactly that price; requires private key |
+| `pons_v2_launch` | `token` | pons v2 factory launch record (deployer, paired token, pool fee) |
+| `pons_v2_snipe_tax` | `curve`, `recipient` | decaying opening snipe tax in bps for a specific recipient |
 | `pons_tx_status` | `txHash` | receipt state and decoded ERC-20 transfers |
 
 ## Input validation

@@ -38,6 +38,19 @@ Constructor options:
 }
 ```
 
-## MCP tools (9)
+## MCP tools (11)
 
-`pons_chain_info`, `pons_price`, `pons_launch_info`, `pons_launch_market`, `pons_token_info`, `pons_balance`, `pons_quote`, `pons_pay`, `pons_tx_status` — see the main docs site for per-tool inputs.
+`pons_chain_info`, `pons_price`, `pons_launch_info`, `pons_launch_market`, `pons_token_info`, `pons_balance`, `pons_quote`, `pons_pay`, `pons_pay_resource`, `pons_v2_launch`, `pons_v2_snipe_tax`, `pons_tx_status` — see the main docs site for per-tool inputs.
+
+
+### `payForResource`
+
+```ts
+import { payForResource } from '@ponsmcp/sdk'
+
+const result = await payForResource(client, 'https://service.example/endpoint')
+// { ok, stage: 'parsed' | 'policy_denied' | 'paid' | 'failed' | 'unsupported',
+//   priceUsdg, payTo, payment: PayResult }
+```
+
+Fetches the URL; on HTTP 402 it parses the requirement (supported shapes: `amount_usdg/pay_to`, `price_usdg/merchant`, nested `intent.payment`, `service`, `create_intent`), then settles the exact price via `client.pay` with all policy checks. Nothing broadcasts unless the 402 parses and policy allows it.
