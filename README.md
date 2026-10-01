@@ -3,7 +3,7 @@
 > Model Context Protocol server for autonomous MPP payments with **PONS** on **Robinhood Chain** (chainId 4663).
 
 [![npm version](https://img.shields.io/npm/v/@ponsmcp/sdk)](https://www.npmjs.com/package/@ponsmcp/sdk)
-[![GitHub](https://img.shields.io/badge/github-ponsmcppayment%2Fsdk-181717)](https://github.com/ponsmcppayment/sdk)
+[![GitHub](https://img.shields.io/badge/github-ponsmcpai%2Fponsmcp--sdk-181717)](https://github.com/ponsmcpai/ponsmcp-sdk)
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Robinhood Chain](https://img.shields.io/badge/chain-Robinhood_Chain_4663-6c47ff)](https://robinhoodchain.blockscout.com)
 
