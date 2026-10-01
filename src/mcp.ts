@@ -8,9 +8,10 @@ import { tokenName, tokenSymbol, tokenDecimals, totalSupply, balanceOf } from '.
 import { ponsPairs, ponsBest, tokenPairs } from './dexscreener.js';
 import { ponsLaunchInfo } from './pons.js';
 import { ponsV2LaunchRecord, ponsV2ConfigCount, ponsV2SnipeTaxBps, PONS_V2_FACTORY, PONS_V2_LAUNCH_AND_BUY } from './ponsv2.js';
+import { quoteBuyPure, quoteSellPure, type BuyQuoteInput } from './curve.js';
 import { PonsMCPClient, payForResource } from './index.js';
 
-const VERSION = '1.1.0';
+const VERSION = '1.2.0';
 
 const TOOLS = [
   {
@@ -60,6 +61,33 @@ const TOOLS = [
         recipient: { type: 'string', description: 'wallet that would receive the buy (0x...)' },
       },
       required: ['curve', 'recipient'], additionalProperties: false,
+    },
+  },
+  {
+    name: 'pons_v2_quote_buy',
+    description: 'Pure curve buy quote for a pons v2 launch: tokens out, fee, tax, snipe tax, and refund given reserves and fee inputs. Pure math — reads no chain state and moves nothing.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        quoteIn: { type: 'string', description: 'buy amount in wei (quote asset)' },
+        quoteReserve: { type: 'string' }, tokenReserve: { type: 'string' }, sellable: { type: 'string' },
+        feeBps: { type: 'string' }, creatorTaxBps: { type: 'string' }, rawSnipeBps: { type: 'string' },
+      },
+      required: ['quoteIn', 'quoteReserve', 'tokenReserve', 'sellable', 'feeBps', 'creatorTaxBps', 'rawSnipeBps'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'pons_v2_quote_sell',
+    description: 'Pure curve sell quote for a pons v2 launch: quote out, fee, tax, and net proceeds. Pure math — reads no chain state and moves nothing.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tokensIn: { type: 'string' }, quoteReserve: { type: 'string' }, tokenReserve: { type: 'string' },
+        feeBps: { type: 'string' }, creatorTaxBps: { type: 'string' },
+      },
+      required: ['tokensIn', 'quoteReserve', 'tokenReserve', 'feeBps', 'creatorTaxBps'],
+      additionalProperties: false,
     },
   },
   {
@@ -176,6 +204,19 @@ async function callTool(name: string, args: Record<string, any>): Promise<unknow
     }
     case 'pons_v2_launch': {
       return ponsV2LaunchRecord(String(args.token ?? ''));
+    }
+    case 'pons_v2_quote_buy': {
+      const input: BuyQuoteInput = {
+        quoteIn: BigInt(args.quoteIn), quoteReserve: BigInt(args.quoteReserve), tokenReserve: BigInt(args.tokenReserve),
+        sellable: BigInt(args.sellable), feeBps: BigInt(args.feeBps), creatorTaxBps: BigInt(args.creatorTaxBps), rawSnipeBps: BigInt(args.rawSnipeBps),
+      };
+      return quoteBuyPure(input);
+    }
+    case 'pons_v2_quote_sell': {
+      return quoteSellPure({
+        tokensIn: BigInt(args.tokensIn), quoteReserve: BigInt(args.quoteReserve), tokenReserve: BigInt(args.tokenReserve),
+        feeBps: BigInt(args.feeBps), creatorTaxBps: BigInt(args.creatorTaxBps),
+      });
     }
     case 'pons_v2_snipe_tax': {
       const bps = await ponsV2SnipeTaxBps(String(args.curve ?? ''), String(args.recipient ?? ''));
