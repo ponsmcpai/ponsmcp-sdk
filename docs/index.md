@@ -3,6 +3,8 @@
 PonsMCP is a local Model Context Protocol server and TypeScript SDK for agents operating on Robinhood Chain (chain ID `4663`). It has two capability groups:
 
 1. **pons intelligence** — read PONS market data and self-describing pons launch tokens directly onchain.
+RPC: set `PONSMCP_ALCHEMY_KEY` to route all chain reads through Alchemy (recommended for agents; falls back to public endpoints automatically).
+
 2. **payment execution** — quote USDG, apply local limits, sign from the configured agent wallet, broadcast, and inspect receipts.
 
 ## Documentation structure

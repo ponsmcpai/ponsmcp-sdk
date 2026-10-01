@@ -11,7 +11,7 @@ import { ponsV2LaunchRecord, ponsV2ConfigCount, ponsV2SnipeTaxBps, PONS_V2_FACTO
 import { quoteBuyPure, quoteSellPure, type BuyQuoteInput } from './curve.js';
 import { PonsMCPClient, payForResource } from './index.js';
 
-const VERSION = '1.2.1';
+const VERSION = '1.3.0';
 
 const TOOLS = [
   {

@@ -22,38 +22,58 @@ export function isAddress(a: string): boolean {
 
 const RPC_BACKOFF_MS = [0, 600, 1600];
 
+// Limit concurrent RPC calls: hosted endpoints throttle bursts, and our own
+// timeout would otherwise abort queued requests. Queue instead.
+let rpcInFlight = 0;
+const rpcQueue: Array<() => void> = [];
+const MAX_CONCURRENT_RPC = 6;
+function releaseRpcSlot(): void {
+  const next = rpcQueue.shift();
+  if (next) next();
+  else rpcInFlight--;
+}
+async function acquireRpcSlot(): Promise<() => void> {
+  if (rpcInFlight < MAX_CONCURRENT_RPC) { rpcInFlight++; return releaseRpcSlot; }
+  return new Promise((resolve) => { rpcQueue.push(() => resolve(releaseRpcSlot)); });
+}
+
 export async function rpc<T = any>(method: string, params: unknown[]): Promise<T> {
+  const alchemyKey = process.env.PONSMCP_ALCHEMY_KEY;
   const urls = process.env.PONSMCP_RPC_URL
     ? [process.env.PONSMCP_RPC_URL]
     : [
+        ...(alchemyKey ? [`https://robinhood-mainnet.g.alchemy.com/v2/${alchemyKey}`] : []),
         'https://rpc.nodeflare.app/robinhood/public',
         CHAIN.rpcUrl,
-        'https://lb.routeme.sh/rpc/evm/4663',
-        'https://api.uniblock.dev/uni/v1/json-rpc?chainId=4663',
       ];
   let lastError: unknown;
-  for (const url of urls) {
-    for (const backoff of RPC_BACKOFF_MS) {
-      if (backoff) await new Promise((r) => setTimeout(r, backoff));
-      try {
-        const res = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'User-Agent': 'ponsmcp-sdk/0.1' },
-          body: JSON.stringify({ jsonrpc: '2.0', id: Date.now(), method, params }),
-          signal: AbortSignal.timeout(8_000),
-        });
-        if (!res.ok) throw new Error(`RPC HTTP ${res.status}`);
-        const j = (await res.json()) as { result?: T; error?: { message: string } };
-        if (j.error) throw new Error(`RPC error: ${j.error.message}`);
-        return j.result as T;
-      } catch (error) {
-        lastError = error;
-        const status = /RPC HTTP (\d{3})/.exec(String((error as Error).message))?.[1];
-        // Only retry rate-limit/server errors on the same endpoint; contract
-        // reverts and malformed requests should surface immediately.
-        if (status !== '429' && (status === undefined || Number(status) < 500)) break;
+  const release = await acquireRpcSlot();
+  try {
+    for (const url of urls) {
+      for (const backoff of RPC_BACKOFF_MS) {
+        if (backoff) await new Promise((r) => setTimeout(r, backoff));
+        try {
+          const res = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'User-Agent': 'ponsmcp-sdk/0.1' },
+            body: JSON.stringify({ jsonrpc: '2.0', id: Date.now(), method, params }),
+            signal: AbortSignal.timeout(8_000),
+          });
+          if (!res.ok) throw new Error(`RPC HTTP ${res.status}`);
+          const j = (await res.json()) as { result?: T; error?: { message: string } };
+          if (j.error) throw new Error(`RPC error: ${j.error.message}`);
+          return j.result as T;
+        } catch (error) {
+          lastError = error;
+          const status = /RPC HTTP (\d{3})/.exec(String((error as Error).message))?.[1];
+          // Only retry rate-limit/server errors on the same endpoint; contract
+          // reverts and malformed requests should surface immediately.
+          if (status !== '429' && (status === undefined || Number(status) < 500)) break;
+        }
       }
     }
+  } finally {
+    release();
   }
   throw lastError instanceof Error ? lastError : new Error('all RPC endpoints failed');
 }
