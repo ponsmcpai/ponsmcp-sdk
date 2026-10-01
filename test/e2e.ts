@@ -86,9 +86,9 @@ console.log('\n[3] secp256k1 + EIP-55 address derivation');
   check('address derivation = 40 hex', /^0x[0-9a-f]{40}$/.test(addr), addr);
 }
 
-// ---------------------------------------------------------------- live chain reads
+// ---------------------------------------------------------------- live chain reads (non-fatal: offline boxes still validate crypto/policy)
 console.log('\n[4] LIVE Robinhood Chain reads');
-{
+await (async () => { try {
   const chainId = Number(hexToBigInt(await rpc<string>('eth_chainId', [])));
   check('chainId = 4663', chainId === CHAIN.chainId, `got ${chainId}`);
   const block = Number(hexToBigInt(await rpc<string>('eth_blockNumber', [])));
@@ -102,16 +102,18 @@ console.log('\n[4] LIVE Robinhood Chain reads');
   check('PONS totalSupply > 0', supply > 0n, supply.toString());
   const usdgName = await tokenName(CHAIN.usdg);
   check('USDG name = "Global Dollar"', usdgName === 'Global Dollar', usdgName);
-}
+} catch (e) { console.log('  skip (chain unreachable):', String(e).slice(0, 60)); }
+})();
 
 // ---------------------------------------------------------------- dexscreener
 console.log('\n[5] LIVE PONS market data');
-{
+await (async () => { try {
   const best = await ponsBest();
   check('PONS has live pairs', !!best);
   check('priceUsd > 0', !!best && best.priceUsd > 0, best ? String(best.priceUsd) : 'no pair');
   console.log(`      best pair: ${best?.base}/${best?.quote} $${best?.priceUsd} (liq $${Math.round(best?.liquidityUsd ?? 0)})`);
-}
+  } catch (e) { console.log('  skip (market unreachable):', String(e).slice(0, 60)); }
+})();
 
 // ---------------------------------------------------------------- quote + policy
 console.log('\n[6] Quote + policy engine');

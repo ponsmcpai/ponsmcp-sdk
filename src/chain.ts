@@ -20,24 +20,39 @@ export function isAddress(a: string): boolean {
   return /^0x[0-9a-fA-F]{40}$/.test(a);
 }
 
+const RPC_BACKOFF_MS = [0, 600, 1600];
+
 export async function rpc<T = any>(method: string, params: unknown[]): Promise<T> {
   const urls = process.env.PONSMCP_RPC_URL
     ? [process.env.PONSMCP_RPC_URL]
-    : [CHAIN.rpcUrl, 'https://rpc.nodeflare.app/robinhood/public'];
+    : [
+        'https://rpc.nodeflare.app/robinhood/public',
+        CHAIN.rpcUrl,
+        'https://lb.routeme.sh/rpc/evm/4663',
+        'https://api.uniblock.dev/uni/v1/json-rpc?chainId=4663',
+      ];
   let lastError: unknown;
   for (const url of urls) {
-    try {
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'User-Agent': 'ponsmcp-sdk/0.1' },
-        body: JSON.stringify({ jsonrpc: '2.0', id: Date.now(), method, params }),
-      });
-      if (!res.ok) throw new Error(`RPC HTTP ${res.status}`);
-      const j = (await res.json()) as { result?: T; error?: { message: string } };
-      if (j.error) throw new Error(`RPC error: ${j.error.message}`);
-      return j.result as T;
-    } catch (error) {
-      lastError = error;
+    for (const backoff of RPC_BACKOFF_MS) {
+      if (backoff) await new Promise((r) => setTimeout(r, backoff));
+      try {
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'User-Agent': 'ponsmcp-sdk/0.1' },
+          body: JSON.stringify({ jsonrpc: '2.0', id: Date.now(), method, params }),
+          signal: AbortSignal.timeout(8_000),
+        });
+        if (!res.ok) throw new Error(`RPC HTTP ${res.status}`);
+        const j = (await res.json()) as { result?: T; error?: { message: string } };
+        if (j.error) throw new Error(`RPC error: ${j.error.message}`);
+        return j.result as T;
+      } catch (error) {
+        lastError = error;
+        const status = /RPC HTTP (\d{3})/.exec(String((error as Error).message))?.[1];
+        // Only retry rate-limit/server errors on the same endpoint; contract
+        // reverts and malformed requests should surface immediately.
+        if (status !== '429' && (status === undefined || Number(status) < 500)) break;
+      }
     }
   }
   throw lastError instanceof Error ? lastError : new Error('all RPC endpoints failed');
