@@ -3,7 +3,7 @@
 // All output text is English only.
 
 import { createInterface } from 'node:readline';
-import { CHAIN, rpc, hexToBigInt, unitToString, isAddress, ethCall } from './chain.js';
+import { CHAIN, rpc, hexToBigInt, unitToString, isAddress, ethCall, erc20TransferData } from './chain.js';
 import { tokenName, tokenSymbol, tokenDecimals, totalSupply, balanceOf } from './erc20.js';
 import { ponsPairs, ponsBest, tokenPairs } from './dexscreener.js';
 import { ponsLaunchInfo } from './pons.js';
@@ -361,11 +361,24 @@ async function callTool(name: string, args: Record<string, any>): Promise<unknow
       return { address: t, name, symbol, decimals, totalSupply: supply.toString() };
     }
     case 'pons_balance': {
-      const client = new PonsMCPClient({ privateKey: process.env.PONSMCP_PRIVATE_KEY });
+      const privKey = process.env.PONSMCP_PRIVATE_KEY;
+      if (!privKey) throw new Error('PONSMCP_PRIVATE_KEY env not set — configure it in your MCP client config to use wallet tools.');
+      const client = new PonsMCPClient({ privateKey: privKey });
       const token = args.token ? String(args.token) : CHAIN.usdg;
-      const b = await client.getBalance(token);
-      const meta = await (async () => { try { return await new PonsMCPClient().tokenInfo(token); } catch { return null; } })();
-      return { wallet: client.address, token, balance: b.human, decimals: b.decimals, symbol: meta?.symbol ?? '?' };
+      const resolvedToken = isAddress(token) ? token : (() => {
+        const up = token.toUpperCase().trim();
+        if (up === 'USDG') return CHAIN.usdg;
+        if (up === 'PONS') return CHAIN.pons;
+        if (up === 'WETH') return CHAIN.weth;
+        const s = resolveStock(up);
+        if (s) return s.address;
+        throw new Error(`Cannot resolve token "${token}" — pass a 0x address or ticker.`);
+      })();
+      const [b, sym] = await Promise.all([
+        client.getBalance(resolvedToken),
+        tokenSymbol(resolvedToken).catch(() => '?'),
+      ]);
+      return { wallet: client.address, token: resolvedToken, balance: b.human, decimals: b.decimals, symbol: sym };
     }
     case 'pons_quote': {
       const client = new PonsMCPClient();
@@ -507,78 +520,98 @@ async function callTool(name: string, args: Record<string, any>): Promise<unknow
       const tokenArg = String(args.token ?? '');
       const amountStr = String(args.amount ?? '0');
       if (!isAddress(to)) throw new Error('Invalid recipient address');
-      // Resolve token: could be ticker, known alias, or raw address.
-      let tokenAddr: string = tokenArg;
-      if (!isAddress(tokenArg)) {
+      // Resolve token ticker or raw address
+      let tokenAddr: string;
+      if (isAddress(tokenArg)) {
+        tokenAddr = tokenArg.toLowerCase();
+      } else {
         const upper = tokenArg.toUpperCase().trim();
         const stock = resolveStock(upper);
-        if (stock) { tokenAddr = stock.address; }
-        else if (upper === 'USDG') { tokenAddr = CHAIN.usdg; }
-        else if (upper === 'PONS') { tokenAddr = CHAIN.pons; }
-        else if (upper === 'WETH' || upper === 'ETH') { tokenAddr = CHAIN.weth; }
+        if (stock) tokenAddr = stock.address;
+        else if (upper === 'USDG') tokenAddr = CHAIN.usdg;
+        else if (upper === 'PONS') tokenAddr = CHAIN.pons;
+        else if (upper === 'WETH') tokenAddr = CHAIN.weth;
         else throw new Error(`Cannot resolve token "${tokenArg}". Pass a 0x address or a known ticker (USDG, PONS, NVDA, TSLA, etc.).`);
       }
-      // Fetch decimals, convert amount, then send via USDG-style pons_pay path
-      // but for arbitrary tokens we do a raw ERC-20 transfer.
+      const privKey = process.env.PONSMCP_PRIVATE_KEY;
+      if (!privKey) throw new Error('PONSMCP_PRIVATE_KEY env not set');
+      const privHex = privKey.replace(/^0x/, '');
+      if (!/^[0-9a-fA-F]{64}$/.test(privHex)) throw new Error('PONSMCP_PRIVATE_KEY must be 64 hex chars');
+
+      // Resolve decimals and convert amount without float precision loss.
+      // Parse the decimal string properly: "5.00" with 18 decimals → 5_000_000_000_000_000_000n
       const dec = await tokenDecimals(tokenAddr);
-      const base = BigInt(Math.round(Number(amountStr) * 10 ** dec));
-      // Build ERC-20 transfer calldata directly and use PonsMCPClient signing layer.
-      const client = new PonsMCPClient({ privateKey: process.env.PONSMCP_PRIVATE_KEY });
-      if (!client.address) throw new Error('PONSMCP_PRIVATE_KEY not set');
-      const { rpc: rpcFn, hexToBigInt: htb, erc20TransferData } = await import('./chain.js');
-      const nonce = htb(await rpcFn<string>('eth_getTransactionCount', [client.address, 'pending']));
-      const gp = htb(await rpcFn<string>('eth_gasPrice', []));
-      const gasPrice = gp > 100_000_000n ? (gp * 3n) / 2n : 100_000_000n;
+      const [whole, frac = ''] = amountStr.replace(/[^0-9.]/g, '').split('.');
+      const fracPadded = frac.slice(0, dec).padEnd(dec, '0');
+      if (fracPadded.length > dec) throw new Error(`amount has more than ${dec} decimal places`);
+      const base = BigInt(whole || '0') * (10n ** BigInt(dec)) + BigInt(fracPadded || '0');
+      if (base <= 0n) throw new Error('amount must be > 0');
+
+      // Use already-imported rpc / erc20TransferData / signTransaction
       const { signTransaction } = await import('./crypto.js');
-      const tx = { nonce, gasPrice, gas: 80_000n, to: tokenAddr, value: 0n, data: Buffer.from(erc20TransferData(to, base).slice(2), 'hex'), chainId: CHAIN.chainId };
-      const raw = (signTransaction as any)(tx, BigInt('0x' + process.env.PONSMCP_PRIVATE_KEY!.replace(/^0x/, '')));
-      const txHash = await rpcFn<string>('eth_sendRawTransaction', ['0x' + raw.toString('hex')]);
-      // Wait for receipt
+      const senderAddr = '0x' + (await import('./crypto.js').then(m => m.privateKeyToAddress(BigInt('0x' + privHex)).slice(2)));
+      const [nonce, gp] = await Promise.all([
+        rpc<string>('eth_getTransactionCount', [senderAddr, 'pending']).then(hexToBigInt),
+        rpc<string>('eth_gasPrice', []).then(hexToBigInt),
+      ]);
+      const gasPrice = gp > 100_000_000n ? (gp * 3n) / 2n : 100_000_000n;
+      const data = Buffer.from(erc20TransferData(to, base).slice(2), 'hex');
+      const tx = { nonce, gasPrice, gas: 80_000n, to: tokenAddr, value: 0n, data, chainId: CHAIN.chainId };
+      const raw = signTransaction(tx, BigInt('0x' + privHex));
+      const txHash = await rpc<string>('eth_sendRawTransaction', ['0x' + Buffer.from(raw).toString('hex')]);
       const waitMs = args.waitMs ? Number(args.waitMs) : 30_000;
       const t0 = Date.now();
       let receipt: any = null;
       while (Date.now() - t0 < waitMs) {
-        receipt = await rpcFn('eth_getTransactionReceipt', [txHash]);
+        receipt = await rpc('eth_getTransactionReceipt', [txHash]);
         if (receipt) break;
-        await new Promise(r => setTimeout(r, 3000));
+        await new Promise(r => setTimeout(r, 3_000));
       }
       return {
         ok: receipt?.status === '0x1',
         txHash, explorer: `${CHAIN.explorer}/tx/${txHash}`,
         token: tokenAddr, to, amountHuman: amountStr, decimals: dec,
-        block: receipt ? Number(htb(receipt.blockNumber)) : null,
-        gasUsed: receipt ? Number(htb(receipt.gasUsed)) : null,
+        block: receipt ? Number(hexToBigInt(receipt.blockNumber)) : null,
+        gasUsed: receipt ? Number(hexToBigInt(receipt.gasUsed)) : null,
       };
     }
     case 'pons_send_eth': {
       const to = String(args.to ?? '');
       const amountEth = String(args.amountEth ?? '0');
       if (!isAddress(to)) throw new Error('Invalid recipient address');
-      const client = new PonsMCPClient({ privateKey: process.env.PONSMCP_PRIVATE_KEY });
-      if (!client.address) throw new Error('PONSMCP_PRIVATE_KEY not set');
-      const { rpc: rpcFn, hexToBigInt: htb } = await import('./chain.js');
-      const { signTransaction } = await import('./crypto.js');
-      const valueWei = BigInt(Math.round(Number(amountEth) * 1e18));
-      const nonce = htb(await rpcFn<string>('eth_getTransactionCount', [client.address, 'pending']));
-      const gp = htb(await rpcFn<string>('eth_gasPrice', []));
+      const privKey = process.env.PONSMCP_PRIVATE_KEY;
+      if (!privKey) throw new Error('PONSMCP_PRIVATE_KEY env not set');
+      const privHex = privKey.replace(/^0x/, '');
+      if (!/^[0-9a-fA-F]{64}$/.test(privHex)) throw new Error('PONSMCP_PRIVATE_KEY must be 64 hex chars');
+      const { signTransaction, privateKeyToAddress } = await import('./crypto.js');
+      const senderAddr = '0x' + privateKeyToAddress(BigInt('0x' + privHex)).slice(2);
+      // Parse ETH amount without float loss: "0.001" → 1_000_000_000_000_000n
+      const [wholeE, fracE = ''] = amountEth.replace(/[^0-9.]/g, '').split('.');
+      const fracE18 = fracE.slice(0, 18).padEnd(18, '0');
+      const valueWei = BigInt(wholeE || '0') * 10n ** 18n + BigInt(fracE18 || '0');
+      if (valueWei <= 0n) throw new Error('amountEth must be > 0');
+      const [nonce, gp] = await Promise.all([
+        rpc<string>('eth_getTransactionCount', [senderAddr, 'pending']).then(hexToBigInt),
+        rpc<string>('eth_gasPrice', []).then(hexToBigInt),
+      ]);
       const gasPrice = gp > 100_000_000n ? (gp * 3n) / 2n : 100_000_000n;
       const tx = { nonce, gasPrice, gas: 21_000n, to, value: valueWei, data: Buffer.alloc(0), chainId: CHAIN.chainId };
-      const raw = (signTransaction as any)(tx, BigInt('0x' + process.env.PONSMCP_PRIVATE_KEY!.replace(/^0x/, '')));
-      const txHash = await rpcFn<string>('eth_sendRawTransaction', ['0x' + raw.toString('hex')]);
+      const raw = signTransaction(tx, BigInt('0x' + privHex));
+      const txHash = await rpc<string>('eth_sendRawTransaction', ['0x' + Buffer.from(raw).toString('hex')]);
       const waitMs = args.waitMs ? Number(args.waitMs) : 30_000;
       const t0 = Date.now();
       let receipt: any = null;
       while (Date.now() - t0 < waitMs) {
-        receipt = await rpcFn('eth_getTransactionReceipt', [txHash]);
+        receipt = await rpc('eth_getTransactionReceipt', [txHash]);
         if (receipt) break;
-        await new Promise(r => setTimeout(r, 3000));
+        await new Promise(r => setTimeout(r, 3_000));
       }
       return {
         ok: receipt?.status === '0x1',
         txHash, explorer: `${CHAIN.explorer}/tx/${txHash}`,
         to, amountEth, valueWei: valueWei.toString(),
-        block: receipt ? Number(htb(receipt.blockNumber)) : null,
-        gasUsed: receipt ? Number(htb(receipt.gasUsed)) : null,
+        block: receipt ? Number(hexToBigInt(receipt.blockNumber)) : null,
+        gasUsed: receipt ? Number(hexToBigInt(receipt.gasUsed)) : null,
       };
     }
     default:

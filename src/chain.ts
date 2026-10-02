@@ -62,9 +62,11 @@ function rpcEndpoints(): string[] {
 
 export async function rpc<T = any>(method: string, params: unknown[]): Promise<T> {
   const urls = rpcEndpoints();
-  const deadline = Date.now() + TOTAL_BUDGET_MS;
   let lastError: unknown;
   const release = await acquireRpcSlot();
+  // Deadline starts AFTER acquiring the slot — if we waited in the queue, that
+  // wait time is not charged against the per-call budget.
+  const deadline = Date.now() + TOTAL_BUDGET_MS;
   try {
     for (const url of urls) {
       if (Date.now() >= deadline) break;
