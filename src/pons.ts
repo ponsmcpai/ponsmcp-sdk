@@ -45,6 +45,10 @@ export async function ponsLaunchInfo(token: string) {
       source: 'onchain pons launch-token getters',
     };
   } catch (error: any) {
-    throw new Error(`not a readable pons v1 launch token: ${error?.message ?? String(error)}`);
+    const msg = String(error?.message ?? error);
+    if (/abort|timeout|fetch failed/i.test(msg)) {
+      throw new Error(`pons_launch_info RPC unreachable (try PONSMCP_ALCHEMY_KEY): ${msg.slice(0, 80)}`);
+    }
+    throw new Error(`not a readable pons v1 launch token (token may predate the v1 factory): ${msg.slice(0, 80)}`);
   }
 }

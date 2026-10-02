@@ -12,7 +12,7 @@ import { escrowNativeBalance, escrowTokenBalance, ponsLaunchFeed, PONS_V2_FEE_ES
 import { quoteBuyPure, quoteSellPure, type BuyQuoteInput } from './curve.js';
 import { PonsMCPClient, payForResource } from './index.js';
 
-const VERSION = '1.4.0';
+const VERSION = '1.4.1';
 
 const TOOLS = [
   {

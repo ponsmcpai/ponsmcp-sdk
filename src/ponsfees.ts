@@ -40,12 +40,29 @@ export async function escrowTokenBalance(recipient: string, token: string): Prom
   return big(hex, 0);
 }
 
+/** Fetch JSON with a direct-then-mirror fallback (ponsfamily.com is unreachable from some networks). */
+async function fetchJsonResilient(url: string): Promise<unknown> {
+  const attempts = [url, `https://r.jina.ai/${url}`];
+  let lastError: unknown;
+  for (const attempt of attempts) {
+    try {
+      const res = await fetch(attempt, { signal: AbortSignal.timeout(12_000), headers: { 'User-Agent': 'ponsmcp-sdk' } });
+      if (!res.ok) { lastError = new Error(`HTTP ${res.status}`); continue; }
+      const text = await res.text();
+      // The mirror path (r.jina.ai) wraps content in markdown — extract the JSON array.
+      const start = text.indexOf('[');
+      const end = text.lastIndexOf(']');
+      if (start !== -1 && end > start) {
+        try { return JSON.parse(text.slice(start, end + 1)); } catch { /* fall through */ }
+      }
+      return JSON.parse(text);
+    } catch (e) { lastError = e; }
+  }
+  throw lastError instanceof Error ? lastError : new Error('all fetch paths failed');
+}
+
 /** Recent pons launches from the official v1 launch feed (off-chain JSON). */
 export async function ponsLaunchFeed(limit = 10): Promise<Array<Record<string, unknown>>> {
-  const res = await fetch(`${PONS_V1_LAUNCH_FEED}?limit=${Math.min(Math.max(limit, 1), 50)}`, {
-    signal: AbortSignal.timeout(10_000),
-  });
-  if (!res.ok) throw new Error(`launch feed HTTP ${res.status}`);
-  const j = (await res.json()) as { launches?: Array<Record<string, unknown>> } | Array<Record<string, unknown>>;
+  const j = await fetchJsonResilient(`${PONS_V1_LAUNCH_FEED}?limit=${Math.min(Math.max(limit, 1), 50)}`) as { launches?: Array<Record<string, unknown>> } | Array<Record<string, unknown>>;
   return Array.isArray(j) ? j : (j.launches ?? []);
 }
