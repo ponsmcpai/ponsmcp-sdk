@@ -1,10 +1,12 @@
 // Robinhood Chain (4663) low-level JSON-RPC client + ABI helpers.
 // Zero external deps — uses global fetch (Node >= 20).
+import { setDefaultAutoSelectFamily } from 'node:net';
+try { setDefaultAutoSelectFamily(true); } catch { /* older node */ }
 
 export const CHAIN = {
   name: 'Robinhood Chain',
   chainId: 4663,
-  rpcUrl: process.env.PONSMCP_RPC_URL ?? 'https://rpc.mainnet.chain.robinhood.com',
+  rpcUrl: process.env.PONSMCP_RPC_URL ?? 'https://rpc.nodeflare.app/robinhood/public',
   explorer: 'https://robinhoodchain.blockscout.com',
   gasToken: 'ETH',
   pons: '0x39dBED3a2bd333467115dE45665cC57F813C4571',
@@ -20,7 +22,13 @@ export function isAddress(a: string): boolean {
   return /^0x[0-9a-fA-F]{40}$/.test(a);
 }
 
-const RPC_BACKOFF_MS = [0, 600, 1600];
+// Per-endpoint timeout. Kept short on purpose: MCP hosts typically enforce a
+// ~30-60s tool-call budget, and a single slow/dead endpoint must never be
+// allowed to eat that whole budget. We'd rather fail one endpoint fast and
+// move to the next than sit in a single 8s+ fetch.
+const ENDPOINT_TIMEOUT_MS = 4_000;
+// Total wall-clock budget across ALL endpoints + retries for one rpc() call.
+const TOTAL_BUDGET_MS = 12_000;
 
 // Limit concurrent RPC calls: hosted endpoints throttle bursts, and our own
 // timeout would otherwise abort queued requests. Queue instead.
@@ -37,45 +45,59 @@ async function acquireRpcSlot(): Promise<() => void> {
   return new Promise((resolve) => { rpcQueue.push(() => resolve(releaseRpcSlot)); });
 }
 
-export async function rpc<T = any>(method: string, params: unknown[]): Promise<T> {
+function rpcEndpoints(): string[] {
+  if (process.env.PONSMCP_RPC_URL) return [process.env.PONSMCP_RPC_URL];
   const alchemyKey = process.env.PONSMCP_ALCHEMY_KEY;
-  const urls = process.env.PONSMCP_RPC_URL
-    ? [process.env.PONSMCP_RPC_URL]
-    : [
-        ...(alchemyKey ? [`https://robinhood-mainnet.g.alchemy.com/v2/${alchemyKey}`] : []),
-        'https://rpc.nodeflare.app/robinhood/public',
-        CHAIN.rpcUrl,
-      ];
+  return [
+    // Alchemy first when a key is configured — fastest and most reliable in
+    // practice. "rpc.mainnet.chain.robinhood.com" is deliberately NOT in this
+    // list: it resolves (via some ISPs) to a captive/blocked-content page
+    // rather than the chain, and hangs for the full connect timeout instead
+    // of failing fast. Keep it out unless proven otherwise.
+    ...(alchemyKey ? [`https://robinhood-mainnet.g.alchemy.com/v2/${alchemyKey}`] : []),
+    'https://rpc.nodeflare.app/robinhood/public',
+    'https://lb.routeme.sh/rpc/evm/4663',
+  ];
+}
+
+export async function rpc<T = any>(method: string, params: unknown[]): Promise<T> {
+  const urls = rpcEndpoints();
+  const deadline = Date.now() + TOTAL_BUDGET_MS;
   let lastError: unknown;
   const release = await acquireRpcSlot();
   try {
     for (const url of urls) {
-      for (const backoff of RPC_BACKOFF_MS) {
-        if (backoff) await new Promise((r) => setTimeout(r, backoff));
-        try {
-          const res = await fetch(url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'User-Agent': 'ponsmcp-sdk/0.1' },
-            body: JSON.stringify({ jsonrpc: '2.0', id: Date.now(), method, params }),
-            signal: AbortSignal.timeout(8_000),
-          });
-          if (!res.ok) throw new Error(`RPC HTTP ${res.status}`);
-          const j = (await res.json()) as { result?: T; error?: { message: string } };
-          if (j.error) throw new Error(`RPC error: ${j.error.message}`);
-          return j.result as T;
-        } catch (error) {
-          lastError = error;
-          const status = /RPC HTTP (\d{3})/.exec(String((error as Error).message))?.[1];
-          // Only retry rate-limit/server errors on the same endpoint; contract
-          // reverts and malformed requests should surface immediately.
-          if (status !== '429' && (status === undefined || Number(status) < 500)) break;
+      if (Date.now() >= deadline) break;
+      const remaining = deadline - Date.now();
+      const perCallTimeout = Math.max(500, Math.min(ENDPOINT_TIMEOUT_MS, remaining));
+      try {
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) ponsmcp-sdk/1.5' },
+          body: JSON.stringify({ jsonrpc: '2.0', id: Date.now(), method, params }),
+          signal: AbortSignal.timeout(perCallTimeout),
+        });
+        if (!res.ok) {
+          if (res.status === 429 && Date.now() < deadline) {
+            await new Promise((r) => setTimeout(r, 400));
+            continue; // retry the SAME endpoint once before moving on
+          }
+          throw new Error(`RPC HTTP ${res.status}`);
         }
+        const j = (await res.json()) as { result?: T; error?: { message: string } };
+        if (j.error) throw new Error(`RPC error: ${j.error.message}`);
+        return j.result as T;
+      } catch (error) {
+        lastError = error;
+        // Any failure (timeout, DNS, connection refused, HTTP error) moves to
+        // the next endpoint immediately — no same-endpoint retry loop that
+        // could burn the whole budget on one bad host.
       }
     }
   } finally {
     release();
   }
-  throw lastError instanceof Error ? lastError : new Error('all RPC endpoints failed');
+  throw lastError instanceof Error ? lastError : new Error('all RPC endpoints failed or budget exhausted');
 }
 
 export async function ethCall(to: string, data: string): Promise<string> {

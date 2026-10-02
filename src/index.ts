@@ -61,10 +61,16 @@ export class PonsMCPClient {
     return this.priv !== undefined;
   }
 
+  static #decimalsCache = new Map<string, number>();
+
   async getBalance(token: string = CHAIN.usdg): Promise<{ raw: bigint; human: string; decimals: number }> {
     if (!this.address) throw new Error('no wallet configured');
-    const raw = await balanceOf(token, this.address);
-    const dec = await tokenDecimals(token);
+    const cached = PonsMCPClient.#decimalsCache.get(token);
+    const [raw, dec] = await Promise.all([
+      balanceOf(token, this.address),
+      cached !== undefined ? Promise.resolve(cached) : tokenDecimals(token),
+    ]);
+    if (cached === undefined) PonsMCPClient.#decimalsCache.set(token, dec);
     return { raw, human: unitToString(raw, dec), decimals: dec };
   }
 
@@ -97,15 +103,25 @@ export class PonsMCPClient {
       return { ...this.fail('policy_denied', o, 'no wallet configured (set PONSMCP_PRIVATE_KEY)'), quote };
     }
 
-    // 1. funds check
-    const bal = await this.getBalance(CHAIN.usdg);
+    // 1. funds check (RPC failure = typed failure, not crash)
+    let bal;
+    try {
+      bal = await this.getBalance(CHAIN.usdg);
+    } catch (e: any) {
+      return { ...this.fail('failed', o, `RPC unreachable for balance check: ${String(e?.message ?? e).slice(0, 80)}`), quote };
+    }
     if (bal.raw < quote.amountBase) {
       return { ...this.fail('policy_denied', o, `insufficient USDG: have ${bal.human}, need ${quote.amountHuman}`), quote };
     }
 
-    // 2. build tx
-    const nonce = hexToBigInt(await rpc<string>('eth_getTransactionCount', [this.address, 'pending']));
-    const gp = hexToBigInt(await rpc<string>('eth_gasPrice', []));
+    // 2. build tx (pre-sign RPC failures become typed failures, never crashes)
+    let nonce: bigint, gp: bigint;
+    try {
+      nonce = hexToBigInt(await rpc<string>('eth_getTransactionCount', [this.address, 'pending']));
+      gp = hexToBigInt(await rpc<string>('eth_gasPrice', []));
+    } catch (e: any) {
+      return { ...this.fail('failed', o, `RPC unreachable for tx build: ${String(e?.message ?? e).slice(0, 80)}`), quote };
+    }
     const gasPrice = gp > 100_000_000n ? (gp * 3n) / 2n : 100_000_000n;
     const tx: LegacyTx = {
       nonce,
