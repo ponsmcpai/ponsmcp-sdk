@@ -8,10 +8,11 @@ import { tokenName, tokenSymbol, tokenDecimals, totalSupply, balanceOf } from '.
 import { ponsPairs, ponsBest, tokenPairs } from './dexscreener.js';
 import { ponsLaunchInfo } from './pons.js';
 import { ponsV2LaunchRecord, ponsV2ConfigCount, ponsV2SnipeTaxBps, PONS_V2_FACTORY, PONS_V2_LAUNCH_AND_BUY } from './ponsv2.js';
+import { escrowNativeBalance, escrowTokenBalance, ponsLaunchFeed, PONS_V2_FEE_ESCROW, PONS_V1_LAUNCH_FEED } from './ponsfees.js';
 import { quoteBuyPure, quoteSellPure, type BuyQuoteInput } from './curve.js';
 import { PonsMCPClient, payForResource } from './index.js';
 
-const VERSION = '1.3.0';
+const VERSION = '1.4.0';
 
 const TOOLS = [
   {
@@ -87,6 +88,36 @@ const TOOLS = [
         feeBps: { type: 'string' }, creatorTaxBps: { type: 'string' },
       },
       required: ['tokensIn', 'quoteReserve', 'tokenReserve', 'feeBps', 'creatorTaxBps'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'pons_escrow_balance',
+    description: 'Read a creator or protocol recipient\'s claimable native ETH balance on the pons v2 fee escrow. Read-only — claiming is a separate wallet action on the escrow contract.',
+    inputSchema: {
+      type: 'object',
+      properties: { recipient: { type: 'string', description: 'creator/fee-recipient address (0x...)' } },
+      required: ['recipient'], additionalProperties: false,
+    },
+  },
+  {
+    name: 'pons_escrow_token_balance',
+    description: 'Read a recipient\'s claimable ERC-20 balance on the pons v2 fee escrow (custom-pair quote asset, or launch-token buyback vest). Read-only.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        recipient: { type: 'string', description: 'recipient address (0x...)' },
+        token: { type: 'string', description: 'quote asset or launch token address (0x...)' },
+      },
+      required: ['recipient', 'token'], additionalProperties: false,
+    },
+  },
+  {
+    name: 'pons_launch_feed',
+    description: 'Recent pons token launches from the official launch feed (v1). Returns name, symbol, address, creator, and timing where available.',
+    inputSchema: {
+      type: 'object',
+      properties: { limit: { type: 'number', description: 'how many launches (1-50, default 10)' } },
       additionalProperties: false,
     },
   },
@@ -221,6 +252,18 @@ async function callTool(name: string, args: Record<string, any>): Promise<unknow
     case 'pons_v2_snipe_tax': {
       const bps = await ponsV2SnipeTaxBps(String(args.curve ?? ''), String(args.recipient ?? ''));
       return { curve: String(args.curve).toLowerCase(), recipient: String(args.recipient).toLowerCase(), snipeTaxBps: bps, verdict: bps === 0 ? 'exempt' : 'wait for decay', factory: PONS_V2_FACTORY, launchAndBuyRouter: PONS_V2_LAUNCH_AND_BUY, note: 'read-only intelligence; PonsMCP does not launch or snipe' };
+    }
+    case 'pons_escrow_balance': {
+      const wei = await escrowNativeBalance(String(args.recipient ?? ''));
+      return { recipient: String(args.recipient).toLowerCase(), escrow: PONS_V2_FEE_ESCROW, claimableNativeWei: wei.toString(), claimableNativeEth: (Number(wei) / 1e18).toFixed(6), note: 'read-only; claim() on the escrow is a separate wallet action' };
+    }
+    case 'pons_escrow_token_balance': {
+      const raw = await escrowTokenBalance(String(args.recipient ?? ''), String(args.token ?? ''));
+      return { recipient: String(args.recipient).toLowerCase(), token: String(args.token).toLowerCase(), escrow: PONS_V2_FEE_ESCROW, claimableRaw: raw.toString() };
+    }
+    case 'pons_launch_feed': {
+      const launches = await ponsLaunchFeed(args.limit ? Number(args.limit) : 10);
+      return { source: PONS_V1_LAUNCH_FEED, count: launches.length, launches };
     }
     case 'pons_token_info': {
       const t = String(args.token ?? '');

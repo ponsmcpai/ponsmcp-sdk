@@ -14,7 +14,8 @@ docs/
 ├── concepts/
 │   ├── mpp-protocol.md          # What is MPP and HTTP 402
 │   ├── robinhood-settlement.md  # USDG settlement on chain 4663
-│   └── agent-integration.md     # Agent payment patterns
+│   ├── agent-integration.md     # Agent payment patterns
+│   └── pons-purpose.md          # What PONS is for in PonsMCP
 ├── guides/
 │   ├── typescript-sdk.md        # Full SDK guide
 │   ├── merchant-integration.md  # Accept agent payments
