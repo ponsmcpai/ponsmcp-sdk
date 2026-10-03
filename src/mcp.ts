@@ -499,7 +499,7 @@ const TOOLS = [
    */
   {
     name: 'pons_send_eth',
-    description: 'Send native ETH (gas token) on Robinhood Chain. Requires PONSMCP_PRIVATE_KEY env.',
+    description: 'Send native ETH (gas token) on Robinhood Chain. Hard cap: 0.01 ETH per transaction, 0.1 ETH per day (enforced before signing). Requires PONSMCP_PRIVATE_KEY env.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -620,7 +620,12 @@ async function callTool(name: string, args: Record<string, any>): Promise<unknow
         tokenSymbol(resolvedToken).catch(() => '?'),
       ]);
       const wallet = client.address;
-      const result: Record<string, unknown> = { wallet, token: resolvedToken, balance: b.human, decimals: b.decimals, symbol: sym };
+      const result: Record<string, unknown> = {
+        wallet, token: resolvedToken,
+        balanceHuman: b.human, balance: b.human,  // balance = human-readable (e.g. "2.5" = 2.5 USDG)
+        balanceRaw: b.raw?.toString() ?? '0',       // balanceRaw = base units (e.g. "2500000" = 2.5 USDG at 6 decimals)
+        decimals: b.decimals, symbol: sym,
+      };
       // Zero balance with a key present almost always means the configured key
       // belongs to a different (unfunded) wallet — say so explicitly.
       if (b.raw === 0n && wallet) {
