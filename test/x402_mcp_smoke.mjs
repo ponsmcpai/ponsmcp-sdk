@@ -49,11 +49,11 @@ const call = (id, method, params) => new Promise((resolve) => {
 
 await call(1, 'initialize', { protocolVersion: '2024-11-05' });
 const init = results.get(1);
-check('initialize reports version 2.1.0', init?.result?.serverInfo?.version === '2.1.0', JSON.stringify(init?.result?.serverInfo));
+check('initialize reports version 2.2.0', init?.result?.serverInfo?.version === '2.2.0', JSON.stringify(init?.result?.serverInfo));
 
 const list = await call(2, 'tools/list', {});
 const names = (list?.result?.tools ?? []).map((t) => t.name);
-check('tools/list exposes 27 tools', names.length === 27, `got ${names.length}`);
+check('tools/list exposes 33 tools', names.length === 33, `got ${names.length}`);
 check('x402_fetch listed', names.includes('x402_fetch'));
 check('x402_discover listed', names.includes('x402_discover'));
 

@@ -15,7 +15,7 @@ import { X402Client } from './x402.js';
 import { PolicyEngine } from './policy.js';
 import { STOCK_TOKENS, STOCK_BY_ADDRESS, resolveStock, isGradeA, isEarlyWatch } from './stocks.js';
 
-const VERSION = '2.1.0';
+const VERSION = '2.2.0';
 // Shared policy engine for pons_send_token and pons_send_eth — same caps as pons_pay.
 const sharedPolicy = new PolicyEngine();
 
@@ -510,6 +510,136 @@ const TOOLS = [
       required: ['to', 'amountEth'], additionalProperties: false,
     },
   },
+  // ── Batch payment ────────────────────────────────────────────────────────
+  /**
+   * pons_pay_batch — Send USDG to multiple recipients sequentially with per-payment policy checks.
+   *
+   * @param payments - array of {payTo: string, amountUsd: string}, required
+   * @param maxTotalUsd - optional cap on aggregate total (default 50)
+   * @param dryRun - if true (default) return plan without broadcasting
+   * @example tools/call request body:
+   * @example { "name": "pons_pay_batch", "arguments": { "payments": [{"payTo":"0x...","amountUsd":"5"}], "dryRun": true } }
+   */
+  {
+    name: 'pons_pay_batch',
+    description: 'Batch USDG payment to multiple recipients — policy checks each individually, executes sequentially. dryRun defaults to true.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        payments: {
+          type: 'array',
+          description: 'Array of payments to execute',
+          items: {
+            type: 'object',
+            properties: {
+              payTo: { type: 'string', description: 'Recipient address (0x...)' },
+              amountUsd: { type: 'string', description: 'USDG amount as decimal string, e.g. "5.00"' },
+            },
+            required: ['payTo', 'amountUsd'],
+          },
+        },
+        maxTotalUsd: { type: 'number', description: 'Optional cap on aggregate total in USD (default 50)' },
+        dryRun: { type: 'boolean', description: 'If true (default), return plan without broadcasting any transaction' },
+      },
+      required: ['payments'], additionalProperties: false,
+    },
+  },
+  // ── x402 health probe ─────────────────────────────────────────────────────
+  /**
+   * x402_health — Probe a URL to check x402 payment support without paying.
+   *
+   * @param url - URL to probe, required
+   * @example tools/call request body:
+   * @example { "name": "x402_health", "arguments": { "url": "https://api.example.com/resource" } }
+   */
+  {
+    name: 'x402_health',
+    description: 'Probe a URL to check if it supports x402 payments — returns payment requirements without paying anything.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'URL to probe for x402 payment support' },
+      },
+      required: ['url'], additionalProperties: false,
+    },
+  },
+  // ── pons v2 bonding-curve trading ─────────────────────────────────────────
+  /**
+   * pons_buy — Buy a pons v2 launch token on the bonding curve.
+   *
+   * @param token - pons v2 launch-token address (0x…), required
+   * @param amountEth - ETH to spend as a decimal string, e.g. '0.001', required
+   * @param slippageBps - slippage tolerance in basis points, optional (default 100 = 1%)
+   * @param dryRun - if true (default) simulate only; set false to broadcast, optional
+   * @example { "name": "pons_buy", "arguments": { "token": "0x…", "amountEth": "0.001" } }
+   */
+  {
+    name: 'pons_buy',
+    description: 'Buy a pons v2 launch token on the bonding curve using native ETH. Quotes the trade, simulates it, then broadcasts when dryRun:false. dryRun defaults to true — set dryRun:false to broadcast. Hard cap: 0.01 ETH per transaction (ETH_MAX_PER_TX policy). Only native-ETH-quoted curves are supported. Requires PONSMCP_PRIVATE_KEY to broadcast.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        token: { type: 'string', description: 'pons v2 launch-token address (0x...)' },
+        amountEth: { type: 'string', description: 'ETH to spend, e.g. "0.001"' },
+        slippageBps: { type: 'number', description: 'Slippage tolerance in basis points (default 100 = 1%)' },
+        dryRun: { type: 'boolean', description: 'If true (default), simulate only. Set false to broadcast.' },
+      },
+      required: ['token', 'amountEth'], additionalProperties: false,
+    },
+  },
+  /**
+   * pons_sell — Sell pons v2 launch tokens back to the bonding curve.
+   *
+   * @param token - pons v2 launch-token address (0x…), required
+   * @param tokenAmount - token amount as a decimal string, e.g. '1000', required
+   * @param slippageBps - slippage tolerance in basis points, optional (default 100 = 1%)
+   * @param dryRun - if true (default) simulate only; set false to broadcast, optional
+   * @example { "name": "pons_sell", "arguments": { "token": "0x…", "tokenAmount": "1000" } }
+   */
+  {
+    name: 'pons_sell',
+    description: 'Sell pons v2 launch tokens back to the bonding curve for native ETH. Quotes the trade, simulates it, then broadcasts when dryRun:false. dryRun defaults to true — set dryRun:false to broadcast. Hard cap: expected ETH proceeds must not exceed 0.01 ETH per transaction (ETH_MAX_PER_TX policy). Requires PONSMCP_PRIVATE_KEY to broadcast.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        token: { type: 'string', description: 'pons v2 launch-token address (0x...)' },
+        tokenAmount: { type: 'string', description: 'Token amount to sell, e.g. "1000"' },
+        slippageBps: { type: 'number', description: 'Slippage tolerance in basis points (default 100 = 1%)' },
+        dryRun: { type: 'boolean', description: 'If true (default), simulate only. Set false to broadcast.' },
+      },
+      required: ['token', 'tokenAmount'], additionalProperties: false,
+    },
+  },
+  /**
+   * pons_scan_interesting — Score and rank pons v2 launches by interestingness.
+   *
+   * @param limit - max launches to return, optional (default 10)
+   * @example { "name": "pons_scan_interesting", "arguments": { "limit": 10 } }
+   */
+  {
+    name: 'pons_scan_interesting',
+    description: 'Score and rank recent pons v2 launches by interestingness: graduation progress (60%) + freshness (40%). Returns launches sorted by score, highest first. Read-only — no key needed.',
+    inputSchema: {
+      type: 'object',
+      properties: { limit: { type: 'number', description: 'Max launches to return (default 10, max 50)' } },
+      additionalProperties: false,
+    },
+  },
+  /**
+   * pons_recent_graduations — Recent pons v2 tokens that graduated to DEX.
+   *
+   * @param limit - max graduations to return, optional (default 20)
+   * @example { "name": "pons_recent_graduations", "arguments": { "limit": 20 } }
+   */
+  {
+    name: 'pons_recent_graduations',
+    description: 'Recent pons v2 tokens that graduated from the bonding curve to the Uniswap V4 DEX. Returns token address, position ID, amounts swept, block, and explorer link. Read-only — no key needed.',
+    inputSchema: {
+      type: 'object',
+      properties: { limit: { type: 'number', description: 'Max graduations to return (default 20, max 50)' } },
+      additionalProperties: false,
+    },
+  },
 ];
 
 function jsonSafe(v: unknown): string {
@@ -896,6 +1026,659 @@ async function callTool(name: string, args: Record<string, any>): Promise<unknow
         to, amountEth, valueWei: valueWei.toString(),
         block: receipt ? Number(hexToBigInt(receipt.blockNumber)) : null,
         gasUsed: receipt ? Number(hexToBigInt(receipt.gasUsed)) : null,
+      };
+    }
+    // ── Batch payment ──────────────────────────────────────────────────────
+    case 'pons_pay_batch': {
+      const payments: Array<{ payTo: string; amountUsd: string }> = Array.isArray(args.payments) ? args.payments : [];
+      if (payments.length === 0) throw new Error('payments array is empty');
+      const maxTotalUsd = typeof args.maxTotalUsd === 'number' ? args.maxTotalUsd : 50;
+      // dryRun defaults to true — must be explicitly set to false to broadcast
+      const dryRun: boolean = args.dryRun === false ? false : true;
+
+      // Validate each payment upfront
+      const USDG_DECIMALS = 6;
+      const parseUsd = (str: string): bigint => {
+        if (!/^\d+(\.\d+)?$/.test(str.trim())) throw new Error(`invalid amount format: '${str}'`);
+        const [whole, frac = ''] = str.trim().split('.');
+        const fracPadded = frac.slice(0, USDG_DECIMALS).padEnd(USDG_DECIMALS, '0');
+        return BigInt(whole || '0') * (10n ** BigInt(USDG_DECIMALS)) + BigInt(fracPadded || '0');
+      };
+
+      const parsed: Array<{ payTo: string; amountUsd: string; amountBase: bigint }> = [];
+      let totalBase = 0n;
+      for (let i = 0; i < payments.length; i++) {
+        const { payTo, amountUsd } = payments[i];
+        if (!isAddress(String(payTo ?? ''))) throw new Error(`payment[${i}].payTo is not a valid address: ${payTo}`);
+        const base = parseUsd(String(amountUsd ?? '0'));
+        if (base <= 0n) throw new Error(`payment[${i}].amountUsd must be > 0`);
+        totalBase += base;
+        parsed.push({ payTo: String(payTo), amountUsd: String(amountUsd), amountBase: base });
+      }
+
+      const totalUsd = Number(totalBase) / 10 ** USDG_DECIMALS;
+      if (totalUsd > maxTotalUsd) {
+        throw new Error(`total ${totalUsd.toFixed(6)} USDG exceeds maxTotalUsd cap of ${maxTotalUsd}`);
+      }
+
+      // Policy check each payment individually
+      const batchPolicy = new PolicyEngine();
+      const policyResults: Array<{ index: number; payTo: string; amountUsd: string; allowed: boolean; reason?: string }> = [];
+      for (let i = 0; i < parsed.length; i++) {
+        const check = batchPolicy.check(parsed[i].amountBase);
+        policyResults.push({ index: i, payTo: parsed[i].payTo, amountUsd: parsed[i].amountUsd, allowed: check.allowed, reason: check.reason });
+        if (check.allowed) batchPolicy.record(parsed[i].amountBase);
+      }
+      const blocked = policyResults.filter(r => !r.allowed);
+      if (blocked.length > 0) {
+        throw new Error(`Policy rejected ${blocked.length} payment(s): ${blocked.map(b => `[${b.index}] ${b.amountUsd} USDG to ${b.payTo}: ${b.reason}`).join('; ')}`);
+      }
+
+      if (dryRun) {
+        return {
+          dryRun: true,
+          note: 'No transactions broadcast. Set dryRun:false to execute.',
+          totalUsd: totalUsd.toFixed(6),
+          maxTotalUsd,
+          paymentCount: parsed.length,
+          plan: parsed.map((p, i) => ({ index: i, payTo: p.payTo, amountUsd: p.amountUsd, amountBase: p.amountBase.toString(), policyAllowed: policyResults[i].allowed })),
+        };
+      }
+
+      // Execute each payment sequentially using pons_pay logic
+      const privKey = process.env.PONSMCP_PRIVATE_KEY;
+      if (!privKey) throw new Error('PONSMCP_PRIVATE_KEY env not set');
+      const privHex = privKey.replace(/^0x/, '');
+      if (!/^[0-9a-fA-F]{64}$/.test(privHex)) throw new Error('PONSMCP_PRIVATE_KEY must be 64 hex chars');
+      const { signTransaction, privateKeyToAddress } = await import('./crypto.js');
+      const senderAddr = '0x' + privateKeyToAddress(BigInt('0x' + privHex)).slice(2);
+
+      const execPolicy = new PolicyEngine();
+      const results: Array<{ index: number; payTo: string; amountUsd: string; ok: boolean; txHash?: string; explorer?: string; error?: string }> = [];
+      for (let i = 0; i < parsed.length; i++) {
+        const { payTo, amountUsd, amountBase } = parsed[i];
+        const policyCheck = execPolicy.check(amountBase);
+        if (!policyCheck.allowed) {
+          results.push({ index: i, payTo, amountUsd, ok: false, error: `policy rejected: ${policyCheck.reason}` });
+          continue;
+        }
+        try {
+          const [nonce, gp] = await Promise.all([
+            rpc<string>('eth_getTransactionCount', [senderAddr, 'pending']).then(hexToBigInt),
+            rpc<string>('eth_gasPrice', []).then(hexToBigInt),
+          ]);
+          const gasPrice = gp > 100_000_000n ? (gp * 3n) / 2n : 100_000_000n;
+          const data = Buffer.from(erc20TransferData(payTo, amountBase).slice(2), 'hex');
+          const tx = { nonce, gasPrice, gas: 80_000n, to: CHAIN.usdg, value: 0n, data, chainId: CHAIN.chainId };
+          const raw = signTransaction(tx, BigInt('0x' + privHex));
+          const txHash = await rpc<string>('eth_sendRawTransaction', ['0x' + Buffer.from(raw).toString('hex')]);
+          const waitMs = 30_000;
+          const t0 = Date.now();
+          let receipt: any = null;
+          while (Date.now() - t0 < waitMs) {
+            receipt = await rpc('eth_getTransactionReceipt', [txHash]);
+            if (receipt) break;
+            await new Promise(r => setTimeout(r, 3_000));
+          }
+          const ok = receipt?.status === '0x1';
+          if (ok) execPolicy.record(amountBase);
+          results.push({ index: i, payTo, amountUsd, ok, txHash, explorer: `${CHAIN.explorer}/tx/${txHash}` });
+        } catch (e: any) {
+          results.push({ index: i, payTo, amountUsd, ok: false, error: e?.message ?? String(e) });
+        }
+      }
+      const succeeded = results.filter(r => r.ok).length;
+      return {
+        dryRun: false,
+        paymentCount: parsed.length,
+        succeeded,
+        failed: parsed.length - succeeded,
+        totalUsd: totalUsd.toFixed(6),
+        results,
+      };
+    }
+    // ── x402 health probe ──────────────────────────────────────────────────
+    case 'x402_health': {
+      const url = String(args.url ?? '');
+      if (!/^https?:\/\//i.test(url)) throw new Error(`invalid URL: ${url}`);
+      const TIMEOUT_MS = 8_000;
+      const fetchWithTimeout = async (fetchUrl: string, method: string): Promise<{ status: number; headers: Record<string, string> }> => {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+        try {
+          const res = await fetch(fetchUrl, { method, signal: controller.signal, redirect: 'manual' });
+          const headers: Record<string, string> = {};
+          res.headers.forEach((v, k) => { headers[k.toLowerCase()] = v; });
+          return { status: res.status, headers };
+        } finally {
+          clearTimeout(timer);
+        }
+      };
+
+      let probe: { status: number; headers: Record<string, string> };
+      try {
+        probe = await fetchWithTimeout(url, 'HEAD');
+      } catch {
+        try {
+          probe = await fetchWithTimeout(url, 'GET');
+        } catch (e: any) {
+          return { supported: false, reason: `request failed: ${e?.message ?? String(e)}` };
+        }
+      }
+
+      if (probe.status === 200) {
+        return { supported: false, reason: 'no payment required (200 OK)' };
+      }
+
+      if (probe.status === 402) {
+        // Look for x402 payment header (X-PAYMENT or X-Payment-Required or www-authenticate: x402)
+        const xPayment = probe.headers['x-payment'] ?? probe.headers['x-payment-required'] ?? null;
+        const wwwAuth = probe.headers['www-authenticate'] ?? '';
+        const isX402 = xPayment !== null || wwwAuth.toLowerCase().includes('x402');
+        if (!isX402) {
+          return { supported: false, reason: '402 but no x402 payment header found (may be a standard HTTP 402)' };
+        }
+        // Try to parse payment details from the header
+        let scheme: string | null = null;
+        let network: string | null = null;
+        let maxAmountRequired: string | null = null;
+        let payTo: string | null = null;
+        let description: string | null = null;
+        if (xPayment) {
+          try {
+            const parsed = JSON.parse(xPayment);
+            scheme = parsed.scheme ?? parsed.type ?? null;
+            network = parsed.network ?? parsed.chainId ?? null;
+            maxAmountRequired = parsed.maxAmountRequired ?? parsed.amount ?? null;
+            payTo = parsed.payTo ?? parsed.recipient ?? null;
+            description = parsed.description ?? null;
+          } catch {
+            // header present but not JSON — still x402-like
+            scheme = 'unknown';
+          }
+        }
+        if (wwwAuth.toLowerCase().includes('x402') && !scheme) {
+          scheme = 'x402';
+          const networkMatch = wwwAuth.match(/network="?([^",\s]+)"?/i);
+          if (networkMatch) network = networkMatch[1];
+        }
+        return { supported: true, scheme, network, maxAmountRequired, payTo, description };
+      }
+
+      return { supported: false, reason: `unexpected HTTP status ${probe.status}` };
+    }
+    // ── pons v2 bonding-curve trading ──────────────────────────────────────
+    case 'pons_buy': {
+      const tokenArg = String(args.token ?? '');
+      const amountEthArg = String(args.amountEth ?? '0');
+      const slippageBps = BigInt(Math.max(0, Math.min(5000, Number(args.slippageBps ?? 100))));
+      const dryRun = args.dryRun !== false; // default true
+
+      if (!isAddress(tokenArg)) throw new Error('Invalid token address');
+
+      // Parse amountEth → wei using BigInt only (no float)
+      const [whB, frB = ''] = amountEthArg.replace(/[^0-9.]/g, '').split('.');
+      const frB18 = frB.slice(0, 18).padEnd(18, '0');
+      const amountWei = BigInt(whB || '0') * 10n ** 18n + BigInt(frB18 || '0');
+      if (amountWei <= 0n) throw new Error('amountEth must be > 0');
+
+      // Policy guard: hard cap 0.01 ETH per tx (ETH_MAX_PER_TX)
+      const ETH_MAX_BUY = 10_000_000_000_000_000n; // 0.01 ETH in wei
+      if (amountWei > ETH_MAX_BUY) throw new Error('amountEth exceeds per-tx cap of 0.01 ETH (ETH_MAX_PER_TX policy)');
+
+      // ABI helpers — zero-dep hex encoding
+      const w64 = (v: bigint) => v.toString(16).padStart(64, '0');
+      const aAddr = (a: string) => a.toLowerCase().replace(/^0x/, '').padStart(64, '0');
+
+      // getLaunchedToken(address) = 0x3cf28b5a — read curve from factory
+      const ltRet = await ethCall(PONS_V2_FACTORY, '0x3cf28b5a' + aAddr(tokenArg));
+      const ltWords = (ltRet.replace(/^0x/, '').match(/.{64}/g) ?? []);
+      // Official struct layout (verified vs official pons.ts decodeLaunchedToken):
+      // w[0]=token w[1]=curve w[2]=deployer w[3]=creatorFeeRecipient w[4]=pairToken
+      // w[5]=graduationThreshold ... w[14]=exists
+      const curveAddr = '0x' + (ltWords[1] ?? '').slice(-40);
+      const ltExists = BigInt('0x' + (ltWords[14] ?? '0')) !== 0n;
+      if (!ltExists) throw new Error(`Token ${tokenArg} is not a registered pons v2 launch`);
+      if (!isAddress(curveAddr) || curveAddr === '0x0000000000000000000000000000000000000000') {
+        throw new Error(`Could not read curve address for token ${tokenArg}`);
+      }
+
+      // Read curve state in parallel
+      const [resRet, feeBpsRet, creatorTaxRet, reservedRet, isNativeRet, graduatedRet, readyRet] = await Promise.all([
+        ethCall(curveAddr, '0x0902f1ac'), // getReserves() → [quoteReserve, tokenReserve]
+        ethCall(curveAddr, '0x24a9d853'), // feeBps()
+        ethCall(curveAddr, '0xc1bb8901'), // creatorTaxBps()
+        ethCall(curveAddr, '0x15a55347'), // reservedTokens()
+        ethCall(curveAddr, '0xdc08e094'), // isNativeQuote()
+        ethCall(curveAddr, '0xe7c2b772'), // graduated()
+        ethCall(curveAddr, '0xc68360a5'), // readyToGraduate()
+      ]);
+      const rw = (resRet.replace(/^0x/, '').match(/.{64}/g) ?? []);
+      const quoteReserve = BigInt('0x' + (rw[0] || '0'));
+      const tokenReserve = BigInt('0x' + (rw[1] || '0'));
+      const feeBps = BigInt('0x' + (feeBpsRet.replace(/^0x/, '') || '0'));
+      const creatorTaxBps = BigInt('0x' + (creatorTaxRet.replace(/^0x/, '') || '0'));
+      const reservedTokens = BigInt('0x' + (reservedRet.replace(/^0x/, '') || '0'));
+      const isNativeQuote = BigInt('0x' + (isNativeRet.replace(/^0x/, '') || '0')) !== 0n;
+      const graduated = BigInt('0x' + (graduatedRet.replace(/^0x/, '') || '0')) !== 0n;
+      const readyToGraduate = BigInt('0x' + (readyRet.replace(/^0x/, '') || '0')) !== 0n;
+
+      if (graduated) throw new Error(`Curve has graduated — trade via the Uniswap V4 pool`);
+      if (readyToGraduate) throw new Error(`Curve is ready to graduate and has stopped trading — call pons_graduate, then trade via V4`);
+      if (!isNativeQuote) throw new Error(`Token uses an ERC-20 pair — only native ETH curves are supported by pons_buy`);
+
+      // Determine signer address
+      const privKey = process.env.PONSMCP_PRIVATE_KEY;
+      if (!dryRun && !privKey) throw new Error('PONSMCP_PRIVATE_KEY env not set — required when dryRun:false');
+      let signerAddr = '0x000000000000000000000000000000000000dead';
+      if (privKey) {
+        const privHex = privKey.replace(/^0x/, '');
+        const { privateKeyToAddress } = await import('./crypto.js');
+        signerAddr = '0x' + privateKeyToAddress(BigInt('0x' + privHex)).slice(2);
+      }
+
+      // currentSnipeTaxBps(address) = 0xd7e1ef39
+      const snipeRet = await ethCall(curveAddr, '0xd7e1ef39' + aAddr(signerAddr));
+      const rawSnipeBps = BigInt('0x' + (snipeRet.replace(/^0x/, '') || '0'));
+
+      // Quote buy using pure curve math
+      const sellable = tokenReserve > reservedTokens ? tokenReserve - reservedTokens : 0n;
+      const quoteResult = quoteBuyPure({ quoteIn: amountWei, quoteReserve, tokenReserve, sellable, feeBps, creatorTaxBps, rawSnipeBps });
+
+      // Apply slippage to get minTokensOut
+      const BPS_D = 10_000n;
+      const minOut = quoteResult.tokensOut * (BPS_D - slippageBps) / BPS_D;
+
+      // buy(uint256 amountIn, uint256 minTokensOut, address recipient) = 0x59a87bc1
+      const buyCalldata = '0x59a87bc1' + w64(amountWei) + w64(minOut) + aAddr(signerAddr);
+
+      // Simulate
+      let simulation: Record<string, unknown>;
+      try {
+        const simOverride = { [signerAddr]: { balance: '0x' + (amountWei * 2n).toString(16) } };
+        const simRet = await rpc<string>('eth_call', [
+          { from: signerAddr, to: curveAddr, data: buyCalldata, value: '0x' + amountWei.toString(16) },
+          'latest', simOverride,
+        ]);
+        simulation = { ok: true, returnData: simRet === '0x' ? undefined : simRet };
+      } catch (e: any) {
+        simulation = { ok: false, error: e?.message ?? String(e) };
+      }
+
+      let gasEstimate: bigint | null = null;
+      try {
+        const geOverride = { [signerAddr]: { balance: '0x' + (amountWei * 2n).toString(16) } };
+        const ge = await rpc<string>('eth_estimateGas', [
+          { from: signerAddr, to: curveAddr, data: buyCalldata, value: '0x' + amountWei.toString(16) },
+          'latest', geOverride,
+        ]);
+        gasEstimate = hexToBigInt(ge);
+      } catch { /* best-effort */ }
+
+      const baseResult = {
+        mode: dryRun ? 'dry-run' : 'broadcast',
+        curve: curveAddr,
+        token: tokenArg,
+        amountEth: amountEthArg,
+        amountWei: amountWei.toString(),
+        tokensOut: quoteResult.tokensOut.toString(),
+        minTokensOut: minOut.toString(),
+        snipeTaxBps: Number(rawSnipeBps),
+        curveFee: quoteResult.fee.toString(),
+        creatorTax: quoteResult.tax.toString(),
+        slippageBps: Number(slippageBps),
+        simulation,
+        gasEstimate: gasEstimate !== null ? gasEstimate.toString() : null,
+      };
+
+      if (dryRun) {
+        return { ...baseResult, note: 'dry-run only — nothing was broadcast. Re-run with dryRun:false to send.' };
+      }
+
+      if (!(simulation as any).ok) {
+        throw new Error(`Buy simulation reverted: ${(simulation as any).error} — refusing to broadcast`);
+      }
+
+      // Broadcast
+      const privHex = privKey!.replace(/^0x/, '');
+      const { signTransaction } = await import('./crypto.js');
+      const [nonce, gp] = await Promise.all([
+        rpc<string>('eth_getTransactionCount', [signerAddr, 'pending']).then(hexToBigInt),
+        rpc<string>('eth_gasPrice', []).then(hexToBigInt),
+      ]);
+      const gasPrice = gp > 100_000_000n ? (gp * 3n) / 2n : 100_000_000n;
+      const gasLimit = gasEstimate !== null ? (gasEstimate * 12n / 10n) : 200_000n;
+      const buyData = Buffer.from(buyCalldata.slice(2), 'hex');
+      const buyTx = { nonce, gasPrice, gas: gasLimit, to: curveAddr, value: amountWei, data: buyData, chainId: CHAIN.chainId };
+      const raw = signTransaction(buyTx, BigInt('0x' + privHex));
+      const txHash = await rpc<string>('eth_sendRawTransaction', ['0x' + Buffer.from(raw).toString('hex')]);
+      const waitMs = 30_000;
+      const t0b = Date.now();
+      let receipt: any = null;
+      while (Date.now() - t0b < waitMs) {
+        receipt = await rpc('eth_getTransactionReceipt', [txHash]);
+        if (receipt) break;
+        await new Promise(r => setTimeout(r, 3_000));
+      }
+      return {
+        ...baseResult,
+        txHash,
+        explorer: `${CHAIN.explorer}/tx/${txHash}`,
+        ok: receipt?.status === '0x1',
+        block: receipt ? Number(hexToBigInt(receipt.blockNumber)) : null,
+        gasUsed: receipt ? Number(hexToBigInt(receipt.gasUsed)) : null,
+      };
+    }
+    case 'pons_sell': {
+      const tokenArg = String(args.token ?? '');
+      const tokenAmountArg = String(args.tokenAmount ?? '0');
+      const slippageBps = BigInt(Math.max(0, Math.min(5000, Number(args.slippageBps ?? 100))));
+      const dryRun = args.dryRun !== false; // default true
+
+      if (!isAddress(tokenArg)) throw new Error('Invalid token address');
+
+      const w64 = (v: bigint) => v.toString(16).padStart(64, '0');
+      const aAddr = (a: string) => a.toLowerCase().replace(/^0x/, '').padStart(64, '0');
+
+      // Look up curve via factory
+      const ltRet = await ethCall(PONS_V2_FACTORY, '0x3cf28b5a' + aAddr(tokenArg));
+      const ltWords = (ltRet.replace(/^0x/, '').match(/.{64}/g) ?? []);
+      const curveAddr = '0x' + (ltWords[1] ?? '').slice(-40);
+      const ltExists = BigInt('0x' + (ltWords[14] ?? '0')) !== 0n;
+      if (!ltExists) throw new Error(`Token ${tokenArg} is not a registered pons v2 launch`);
+      if (!isAddress(curveAddr) || curveAddr === '0x0000000000000000000000000000000000000000') {
+        throw new Error(`Could not read curve address for token ${tokenArg}`);
+      }
+
+      // Get token decimals to parse tokenAmount
+      const dec = await tokenDecimals(tokenArg).catch(() => 18);
+
+      // Parse tokenAmount using BigInt only (no float)
+      const [whTok, frTok = ''] = tokenAmountArg.replace(/[^0-9.]/g, '').split('.');
+      const frTokPad = frTok.slice(0, dec).padEnd(dec, '0');
+      const tokensIn = BigInt(whTok || '0') * 10n ** BigInt(dec) + BigInt(frTokPad || '0');
+      if (tokensIn <= 0n) throw new Error('tokenAmount must be > 0');
+
+      // Read curve state
+      const [resRet, feeBpsRet, creatorTaxRet, readyRet, graduatedRet] = await Promise.all([
+        ethCall(curveAddr, '0x0902f1ac'), // getReserves()
+        ethCall(curveAddr, '0x24a9d853'), // feeBps()
+        ethCall(curveAddr, '0xc1bb8901'), // creatorTaxBps()
+        ethCall(curveAddr, '0xc68360a5'), // readyToGraduate()
+        ethCall(curveAddr, '0xe7c2b772'), // graduated()
+      ]);
+      const rw = (resRet.replace(/^0x/, '').match(/.{64}/g) ?? []);
+      const quoteReserve = BigInt('0x' + (rw[0] || '0'));
+      const tokenReserve = BigInt('0x' + (rw[1] || '0'));
+      const feeBps = BigInt('0x' + (feeBpsRet.replace(/^0x/, '') || '0'));
+      const creatorTaxBps = BigInt('0x' + (creatorTaxRet.replace(/^0x/, '') || '0'));
+      const readyToGraduate = BigInt('0x' + (readyRet.replace(/^0x/, '') || '0')) !== 0n;
+      const graduated = BigInt('0x' + (graduatedRet.replace(/^0x/, '') || '0')) !== 0n;
+      if (graduated) throw new Error('Curve has graduated — trade via the Uniswap V4 pool');
+      if (readyToGraduate) throw new Error('Curve is ready to graduate and has stopped trading — call pons_graduate, then sell via V4');
+
+      // Quote sell using pure curve math
+      const sellResult = quoteSellPure({ tokensIn, quoteReserve, tokenReserve, feeBps, creatorTaxBps });
+
+      // Policy guard: ETH_MAX_PER_TX on expected proceeds
+      const ETH_MAX_SELL = 10_000_000_000_000_000n; // 0.01 ETH
+      if (sellResult.netQuote > ETH_MAX_SELL) throw new Error('Expected ETH proceeds exceed per-tx cap of 0.01 ETH (ETH_MAX_PER_TX policy)');
+
+      const BPS_D = 10_000n;
+      const minQuoteOut = sellResult.netQuote * (BPS_D - slippageBps) / BPS_D;
+
+      // Determine signer
+      const privKey = process.env.PONSMCP_PRIVATE_KEY;
+      if (!dryRun && !privKey) throw new Error('PONSMCP_PRIVATE_KEY env not set — required when dryRun:false');
+      let signerAddr = '0x000000000000000000000000000000000000dead';
+      if (privKey) {
+        const privHex = privKey.replace(/^0x/, '');
+        const { privateKeyToAddress } = await import('./crypto.js');
+        signerAddr = '0x' + privateKeyToAddress(BigInt('0x' + privHex)).slice(2);
+      }
+
+      // Check allowance: allowance(address,address) = 0xdd62ed3e
+      const allowRet = await ethCall(tokenArg, '0xdd62ed3e' + aAddr(signerAddr) + aAddr(curveAddr));
+      const currentAllowance = BigInt('0x' + (allowRet.replace(/^0x/, '') || '0'));
+      const needsApproval = currentAllowance < tokensIn;
+
+      // approve(address,uint256) = 0x095ea7b3
+      const approveCalldata = '0x095ea7b3' + aAddr(curveAddr) + w64(tokensIn);
+      // sell(uint256,uint256,address) = 0xd04c6983
+      const sellCalldata = '0xd04c6983' + w64(tokensIn) + w64(minQuoteOut) + aAddr(signerAddr);
+
+      // Simulate sell
+      let simulation: Record<string, unknown>;
+      try {
+        const simRet = await rpc<string>('eth_call', [
+          { from: signerAddr, to: curveAddr, data: sellCalldata, value: '0x0' },
+          'latest',
+        ]);
+        simulation = { ok: true, returnData: simRet === '0x' ? undefined : simRet };
+      } catch (e: any) {
+        simulation = { ok: false, error: e?.message ?? String(e) };
+      }
+
+      const baseResult = {
+        mode: dryRun ? 'dry-run' : 'broadcast',
+        curve: curveAddr,
+        token: tokenArg,
+        tokenAmount: tokenAmountArg,
+        tokensIn: tokensIn.toString(),
+        quoteOut: sellResult.quoteOut.toString(),
+        netQuoteOut: sellResult.netQuote.toString(),
+        minQuoteOut: minQuoteOut.toString(),
+        curveFee: sellResult.fee.toString(),
+        creatorTax: sellResult.tax.toString(),
+        slippageBps: Number(slippageBps),
+        needsApproval,
+        simulation,
+      };
+
+      if (dryRun) {
+        return { ...baseResult, note: 'dry-run only — nothing was broadcast. Re-run with dryRun:false to send.' };
+      }
+
+      if (!(simulation as any).ok && !needsApproval) {
+        throw new Error(`Sell simulation reverted: ${(simulation as any).error} — refusing to broadcast`);
+      }
+
+      const privHex = privKey!.replace(/^0x/, '');
+      const { signTransaction } = await import('./crypto.js');
+      const [nonce, gp] = await Promise.all([
+        rpc<string>('eth_getTransactionCount', [signerAddr, 'pending']).then(hexToBigInt),
+        rpc<string>('eth_gasPrice', []).then(hexToBigInt),
+      ]);
+      const gasPrice = gp > 100_000_000n ? (gp * 3n) / 2n : 100_000_000n;
+
+      let approveTxHash: string | undefined;
+      let currentNonce = nonce;
+
+      if (needsApproval) {
+        const approveData = Buffer.from(approveCalldata.slice(2), 'hex');
+        const approveTx = { nonce: currentNonce, gasPrice, gas: 80_000n, to: tokenArg, value: 0n, data: approveData, chainId: CHAIN.chainId };
+        const approveRaw = signTransaction(approveTx, BigInt('0x' + privHex));
+        approveTxHash = await rpc<string>('eth_sendRawTransaction', ['0x' + Buffer.from(approveRaw).toString('hex')]);
+        // Wait for approval to mine before submitting sell
+        const t0a = Date.now();
+        while (Date.now() - t0a < 20_000) {
+          const r = await rpc('eth_getTransactionReceipt', [approveTxHash]);
+          if (r) break;
+          await new Promise(r => setTimeout(r, 2_000));
+        }
+        currentNonce = nonce + 1n;
+      }
+
+      const sellData = Buffer.from(sellCalldata.slice(2), 'hex');
+      const sellTx = { nonce: currentNonce, gasPrice, gas: 150_000n, to: curveAddr, value: 0n, data: sellData, chainId: CHAIN.chainId };
+      const sellRaw = signTransaction(sellTx, BigInt('0x' + privHex));
+      const txHash = await rpc<string>('eth_sendRawTransaction', ['0x' + Buffer.from(sellRaw).toString('hex')]);
+
+      const t0s = Date.now();
+      let receipt: any = null;
+      while (Date.now() - t0s < 30_000) {
+        receipt = await rpc('eth_getTransactionReceipt', [txHash]);
+        if (receipt) break;
+        await new Promise(r => setTimeout(r, 3_000));
+      }
+      return {
+        ...baseResult,
+        txHash,
+        ...(approveTxHash ? { approveTxHash } : {}),
+        explorer: `${CHAIN.explorer}/tx/${txHash}`,
+        ok: receipt?.status === '0x1',
+        block: receipt ? Number(hexToBigInt(receipt.blockNumber)) : null,
+        gasUsed: receipt ? Number(hexToBigInt(receipt.gasUsed)) : null,
+      };
+    }
+    case 'pons_scan_interesting': {
+      const limit = Math.min(50, Math.max(1, Number(args.limit ?? 10)));
+
+      // Scan recent TokenLaunched events on the v2 factory
+      const latestHex = await rpc<string>('eth_blockNumber', []);
+      const latest = hexToBigInt(latestHex);
+      const lookback = 20_000n;
+      const fromBlock = latest > lookback ? latest - lookback : 0n;
+
+      // TokenLaunched(address indexed token, address indexed curve, address indexed deployer, address pairToken, uint256 launchConfigId, uint256 graduationThreshold)
+      // topic: 0x8d4aad4953d0ca700d468f3753aa14432d1b35b43ec6409f051fb6aa43a89607
+      const tokenLaunchedTopic = '0x8d4aad4953d0ca700d468f3753aa14432d1b35b43ec6409f051fb6aa43a89607';
+
+      type RawLog = { address: string; topics: string[]; data: string; blockNumber: string; transactionHash: string };
+      let logs: RawLog[] = [];
+      try {
+        logs = await rpc<RawLog[]>('eth_getLogs', [{
+          address: PONS_V2_FACTORY,
+          topics: [tokenLaunchedTopic],
+          fromBlock: '0x' + fromBlock.toString(16),
+          toBlock: latestHex,
+        }]);
+      } catch { /* network failure — return empty */ }
+
+      // Re-filter client-side (invariant: address + topic[0])
+      logs = logs.filter(l =>
+        l.address.toLowerCase() === PONS_V2_FACTORY.toLowerCase() &&
+        l.topics[0]?.toLowerCase() === tokenLaunchedTopic.toLowerCase()
+      );
+
+      // Decode TokenLaunched entries (most recent first)
+      const aAddr = (a: string) => a.toLowerCase().replace(/^0x/, '').padStart(64, '0');
+      const launches = logs.map(log => {
+        const dw = (log.data.replace(/^0x/, '').match(/.{64}/g) ?? []);
+        return {
+          token: '0x' + (log.topics[1] ?? '').slice(-40),
+          curve: '0x' + (log.topics[2] ?? '').slice(-40),
+          deployer: '0x' + (log.topics[3] ?? '').slice(-40),
+          pairToken: '0x' + (dw[0] ?? '').slice(-40),
+          blockNum: Number(BigInt(log.blockNumber ?? '0x0')),
+          transactionHash: log.transactionHash,
+        };
+      }).reverse();
+
+      // Score each candidate: fetch curve state in parallel, limit to 3x candidates
+      const candidates = launches.slice(0, limit * 3);
+      const nowSec = Math.floor(Date.now() / 1000);
+      const scored: Array<Record<string, unknown>> = [];
+
+      await Promise.all(candidates.map(async (launch) => {
+        try {
+          const [realQRet, gradThreshRet, launchedAtRet, graduatedRet] = await Promise.all([
+            ethCall(launch.curve, '0x4f1f58fd').catch(() => '0x'), // realQuoteReserve()
+            ethCall(launch.curve, '0x8b0bc501').catch(() => '0x'), // graduationThreshold()
+            ethCall(launch.curve, '0xbf56b371').catch(() => '0x'), // launchedAt()
+            ethCall(launch.curve, '0xe7c2b772').catch(() => '0x'), // graduated()
+          ]);
+          const realQuoteReserve = BigInt('0x' + (realQRet.replace(/^0x/, '') || '0'));
+          const graduationThreshold = BigInt('0x' + (gradThreshRet.replace(/^0x/, '') || '0'));
+          const launchedAt = Number(BigInt('0x' + (launchedAtRet.replace(/^0x/, '') || '0')));
+          const graduated = BigInt('0x' + (graduatedRet.replace(/^0x/, '') || '0')) !== 0n;
+          if (graduated) return; // exclude already-graduated tokens
+
+          const ageSeconds = launchedAt > 0 ? Math.max(0, nowSec - launchedAt) : 0;
+          const ageHours = ageSeconds / 3600;
+          const graduationPct = graduationThreshold > 0n
+            ? Number((realQuoteReserve * 10_000n) / graduationThreshold) / 100
+            : 0;
+          // Interestingness: 60% graduation progress + 40% freshness (decays over 50h)
+          const gradScore = Math.min(100, graduationPct);
+          const freshnessScore = Math.max(0, 100 - ageHours * 2);
+          const interestScore = gradScore * 0.6 + freshnessScore * 0.4;
+
+          scored.push({
+            token: launch.token,
+            curve: launch.curve,
+            deployer: launch.deployer,
+            pairToken: launch.pairToken,
+            realQuoteReserveWei: realQuoteReserve.toString(),
+            graduationThresholdWei: graduationThreshold.toString(),
+            graduationPct: Math.round(graduationPct * 10) / 10,
+            ageSeconds,
+            ageHours: Math.round(ageHours * 10) / 10,
+            launchedAt,
+            blockNumber: launch.blockNum,
+            interestScore: Math.round(interestScore * 10) / 10,
+          });
+        } catch { /* skip failed reads */ }
+      }));
+
+      scored.sort((a, b) => (b.interestScore as number) - (a.interestScore as number));
+
+      return {
+        scannedBlocks: Number(lookback),
+        foundLaunches: launches.length,
+        scored: scored.length,
+        launches: scored.slice(0, limit),
+        note: 'Interest score = 60% graduation progress + 40% freshness (freshness decays to 0 after ~50 hours)',
+      };
+    }
+    case 'pons_recent_graduations': {
+      const limit = Math.min(50, Math.max(1, Number(args.limit ?? 20)));
+
+      const latestHex = await rpc<string>('eth_blockNumber', []);
+      const latest = hexToBigInt(latestHex);
+      const lookback = 50_000n;
+      const fromBlock = latest > lookback ? latest - lookback : 0n;
+
+      // PoolGraduated(address indexed token, uint256 positionId, uint256 tokenAmount, uint256 pairTokenAmount)
+      // topic: 0x0a44ef75df69c534f43cd6c1aa3ef8983065fe5fe79ef9e79f6494e6f258c259
+      const poolGraduatedTopic = '0x0a44ef75df69c534f43cd6c1aa3ef8983065fe5fe79ef9e79f6494e6f258c259';
+
+      type RawLog = { address: string; topics: string[]; data: string; blockNumber: string; transactionHash: string };
+      let logs: RawLog[] = [];
+      try {
+        logs = await rpc<RawLog[]>('eth_getLogs', [{
+          address: PONS_V2_FACTORY,
+          topics: [poolGraduatedTopic],
+          fromBlock: '0x' + fromBlock.toString(16),
+          toBlock: latestHex,
+        }]);
+      } catch { /* network failure — return empty */ }
+
+      // Re-filter client-side (address + topic[0])
+      logs = logs.filter(l =>
+        l.address.toLowerCase() === PONS_V2_FACTORY.toLowerCase() &&
+        l.topics[0]?.toLowerCase() === poolGraduatedTopic.toLowerCase()
+      );
+
+      // Decode graduation events (most recent first)
+      const graduations = logs.slice(-limit).reverse().map(log => {
+        const dw = (log.data.replace(/^0x/, '').match(/.{64}/g) ?? []);
+        return {
+          token: '0x' + (log.topics[1] ?? '').slice(-40),
+          positionId: BigInt('0x' + (dw[0] ?? '0')).toString(),
+          tokenAmount: BigInt('0x' + (dw[1] ?? '0')).toString(),
+          pairTokenAmount: BigInt('0x' + (dw[2] ?? '0')).toString(),
+          blockNumber: Number(BigInt(log.blockNumber ?? '0x0')),
+          transactionHash: log.transactionHash,
+          explorer: `${CHAIN.explorer}/tx/${log.transactionHash}`,
+        };
+      });
+
+      return {
+        scannedFromBlock: Number(fromBlock),
+        scannedToBlock: Number(latest),
+        count: graduations.length,
+        graduations,
       };
     }
     default:
