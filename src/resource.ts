@@ -10,8 +10,9 @@
 //   { service: { price_usdg: "2.50", merchant: "0x…" } }
 //   { create_intent: { amount_usdg: "2.50", merchant_address: "0x…" } }
 
-import { isAddress } from './chain.js';
+import { CHAIN, isAddress } from './chain.js';
 import type { PonsMCPClient, PayResult } from './index.js';
+import { parse402Response, type X402Requirement } from './x402.js';
 
 export interface ResourcePayment {
   ok: boolean;
@@ -20,6 +21,8 @@ export interface ResourcePayment {
   payTo?: string;
   chainId?: number;
   payment?: PayResult;
+  /** Set when the 402 was x402-formatted (X-PAYMENT header / accepts body). */
+  x402?: boolean;
   error?: string;
 }
 
@@ -27,6 +30,22 @@ interface Parsed402 {
   priceUsdg: string;
   payTo: string;
   chainId?: number;
+  x402?: boolean;
+}
+
+/** maxAmountRequired (asset base units, 6 dec) → USD decimal string. */
+function microToUsd(amount: string | number): string | null {
+  const n = typeof amount === 'number' ? amount : Number.parseFloat(amount);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  const usd = n / 1e6;
+  return usd.toFixed(6).replace(/0+$/, '').replace(/\.$/, '') || '0';
+}
+
+/** Normalize a parsed x402 requirement into the Parsed402 settlement shape. */
+function fromX402Requirement(req: X402Requirement): Parsed402 | null {
+  const usd = microToUsd(req.maxAmountRequired ?? '');
+  if (!usd) return null;
+  return { priceUsdg: usd, payTo: req.payTo, x402: true };
 }
 
 export function parse402(body: unknown): Parsed402 | null {
@@ -70,9 +89,33 @@ export async function payForResource(
   if (response.status !== 402) {
     return { ok: false, stage: 'unsupported', error: `expected HTTP 402 from ${url}, got ${response.status}` };
   }
+  // x402 first: X-PAYMENT header (base64 JSON) or an { x402Version, accepts }
+  // body take precedence over the native body shapes below.
+  const x402 = parse402Response(response, await response.clone().json().catch(() => undefined));
+  if (x402.ok && x402.requirement) {
+    const req = x402.requirement;
+    if (req.scheme && req.scheme !== 'exact') {
+      return { ok: false, stage: 'unsupported', error: `unsupported x402 scheme '${req.scheme}' — only 'exact' is settled directly`, x402: true };
+    }
+    if (req.network && !/(4663|robinhood)/i.test(req.network)) {
+      return { ok: false, stage: 'unsupported', error: `x402 requirement targets network '${req.network}'; PonsMCP settles on Robinhood Chain (4663)`, x402: true };
+    }
+    if (req.asset && isAddress(req.asset) && req.asset.toLowerCase() !== CHAIN.usdg.toLowerCase()) {
+      return { ok: false, stage: 'unsupported', error: `x402 requirement demands asset ${req.asset}; PonsMCP settles in USDG (${CHAIN.usdg})`, x402: true };
+    }
+    const parsedX = fromX402Requirement(req);
+    if (!parsedX) {
+      return { ok: false, stage: 'unsupported', error: `invalid x402 maxAmountRequired '${req.maxAmountRequired}'`, x402: true };
+    }
+    const paymentX = await client.pay({ payTo: parsedX.payTo, amountUsd: parsedX.priceUsdg, waitMs: opts.waitMs });
+    if (!paymentX.ok) {
+      return { ok: false, stage: paymentX.stage === 'policy_denied' ? 'policy_denied' : 'failed', priceUsdg: parsedX.priceUsdg, payTo: parsedX.payTo, x402: true, payment: paymentX, error: paymentX.error };
+    }
+    return { ok: true, stage: 'paid', priceUsdg: parsedX.priceUsdg, payTo: parsedX.payTo, chainId: 4663, x402: true, payment: paymentX };
+  }
   let body: unknown;
   try { body = await response.json(); } catch {
-    return { ok: false, stage: 'unsupported', error: '402 body was not JSON' };
+    return { ok: false, stage: 'unsupported', error: '402 body was not JSON and no x402 X-PAYMENT header was present' };
   }
   const parsed = parse402(body);
   if (!parsed) {

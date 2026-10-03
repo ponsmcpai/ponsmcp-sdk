@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Full test runner for all 25 PonsMCP tools.
+// Full test runner for the 25 pre-x402 PonsMCP tools (x402 tools covered in x402_suite.mjs / x402_mcp_smoke.mjs).
 // Reports: name | status | latency | sample output or error
 
 import { createInterface } from 'node:readline';

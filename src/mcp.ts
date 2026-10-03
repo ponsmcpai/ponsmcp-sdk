@@ -11,24 +11,46 @@ import { ponsV2LaunchRecord, ponsV2ConfigCount, ponsV2SnipeTaxBps, PONS_V2_FACTO
 import { escrowNativeBalance, escrowTokenBalance, ponsLaunchFeed, PONS_V2_FEE_ESCROW, PONS_V1_LAUNCH_FEED } from './ponsfees.js';
 import { quoteBuyPure, quoteSellPure, type BuyQuoteInput } from './curve.js';
 import { PonsMCPClient, payForResource } from './index.js';
+import { X402Client } from './x402.js';
 import { PolicyEngine } from './policy.js';
 import { STOCK_TOKENS, STOCK_BY_ADDRESS, resolveStock, isGradeA, isEarlyWatch } from './stocks.js';
 
-const VERSION = '2.0.1';
+const VERSION = '2.1.0';
 // Shared policy engine for pons_send_token and pons_send_eth — same caps as pons_pay.
 const sharedPolicy = new PolicyEngine();
 
 const TOOLS = [
+  /**
+   * pons_chain_info — Robinhood Chain network facts.
+   *
+   * @param none - this tool takes no arguments
+   * @example tools/call request body:
+   * @example { "name": "pons_chain_info", "arguments": {} }
+   */
   {
     name: 'pons_chain_info',
     description: 'Get Robinhood Chain network info: chainId, RPC, explorer, and the canonical PONS / USDG / WETH token addresses.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   },
+  /**
+   * pons_price — Live PONS market snapshot via DexScreener.
+   *
+   * @param none - this tool takes no arguments
+   * @example tools/call request body:
+   * @example { "name": "pons_price", "arguments": {} }
+   */
   {
     name: 'pons_price',
     description: 'Get the live PONS token price (USD), liquidity, and top DEX pairs on Robinhood Chain via DexScreener.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   },
+  /**
+   * pons_launch_info — Read a pons v1 launch token onchain: pool, supply, logo, description, socials.
+   *
+   * @param token - pons launch-token contract address (0x…), required
+   * @example tools/call request body:
+   * @example { "name": "pons_launch_info", "arguments": { "token": "0x…" } }
+   */
   {
     name: 'pons_launch_info',
     description: 'Read a pons v1 launch token directly onchain: canonical pool, fixed supply, logo, description, and social links. Names/symbols are not identity; use the token address.',
@@ -38,6 +60,13 @@ const TOOLS = [
       required: ['token'], additionalProperties: false,
     },
   },
+  /**
+   * pons_launch_market — Live DEX markets, price, and liquidity for a pons launch token.
+   *
+   * @param token - pons launch-token contract address (0x…), required
+   * @example tools/call request body:
+   * @example { "name": "pons_launch_market", "arguments": { "token": "0x…" } }
+   */
   {
     name: 'pons_launch_market',
     description: 'Get live Robinhood Chain DEX markets, price, liquidity, and 24h change for a pons launch token address.',
@@ -47,6 +76,13 @@ const TOOLS = [
       required: ['token'], additionalProperties: false,
     },
   },
+  /**
+   * pons_v2_launch — Read a pons v2 factory launch record (deployer, paired token, pool fee, supply). Read-only.
+   *
+   * @param token - pons v2 launch-token address (0x…), required
+   * @example tools/call request body:
+   * @example { "name": "pons_v2_launch", "arguments": { "token": "0x…" } }
+   */
   {
     name: 'pons_v2_launch',
     description: 'Read a pons v2 launch record from the factory: deployer, paired token, pool fee, supply, restrictions end block. Read-only; does not launch anything.',
@@ -56,6 +92,14 @@ const TOOLS = [
       required: ['token'], additionalProperties: false,
     },
   },
+  /**
+   * pons_v2_snipe_tax — Read the decaying opening snipe tax (bps) a v2 curve would charge a recipient right now.
+   *
+   * @param curve - pons v2 curve address (0x…), required
+   * @param recipient - wallet that would receive the buy (0x…), required
+   * @example tools/call request body:
+   * @example { "name": "pons_v2_snipe_tax", "arguments": { "curve": "0x…", "recipient": "0x…" } }
+   */
   {
     name: 'pons_v2_snipe_tax',
     description: 'Read the decaying opening snipe tax (bps) a pons v2 curve would charge a specific recipient right now. Keyed on the recipient per pons docs. Read-only.',
@@ -68,6 +112,19 @@ const TOOLS = [
       required: ['curve', 'recipient'], additionalProperties: false,
     },
   },
+  /**
+   * pons_v2_quote_buy — Pure curve buy quote: tokens out, fee, tax, snipe tax, refund. No chain reads.
+   *
+   * @param quoteIn - buy amount in wei (quote asset), required
+   * @param quoteReserve - quote-asset reserve in wei, required
+   * @param tokenReserve - token reserve in wei (base units), required
+   * @param sellable - sellable token supply in wei, required
+   * @param feeBps - protocol fee in basis points, required
+   * @param creatorTaxBps - creator tax in basis points, required
+   * @param rawSnipeBps - raw opening snipe tax in basis points, required
+   * @example tools/call request body:
+   * @example { "name": "pons_v2_quote_buy", "arguments": { "quoteIn": "1000000000000000000", "quoteReserve": "…", "tokenReserve": "…", "sellable": "…", "feeBps": "100", "creatorTaxBps": "300", "rawSnipeBps": "5000" } }
+   */
   {
     name: 'pons_v2_quote_buy',
     description: 'Pure curve buy quote for a pons v2 launch: tokens out, fee, tax, snipe tax, and refund given reserves and fee inputs. Pure math — reads no chain state and moves nothing.',
@@ -82,6 +139,17 @@ const TOOLS = [
       additionalProperties: false,
     },
   },
+  /**
+   * pons_v2_quote_sell — Pure curve sell quote: quote out, fee, tax, net proceeds. No chain reads.
+   *
+   * @param tokensIn - tokens sold in wei (base units), required
+   * @param quoteReserve - quote-asset reserve in wei, required
+   * @param tokenReserve - token reserve in wei, required
+   * @param feeBps - protocol fee in basis points, required
+   * @param creatorTaxBps - creator tax in basis points, required
+   * @example tools/call request body:
+   * @example { "name": "pons_v2_quote_sell", "arguments": { "tokensIn": "1000000", "quoteReserve": "…", "tokenReserve": "…", "feeBps": "100", "creatorTaxBps": "300" } }
+   */
   {
     name: 'pons_v2_quote_sell',
     description: 'Pure curve sell quote for a pons v2 launch: quote out, fee, tax, and net proceeds. Pure math — reads no chain state and moves nothing.',
@@ -95,6 +163,13 @@ const TOOLS = [
       additionalProperties: false,
     },
   },
+  /**
+   * pons_escrow_balance — Claimable native ETH on the pons v2 fee escrow for a recipient. Read-only.
+   *
+   * @param recipient - creator/fee-recipient address (0x…), required
+   * @example tools/call request body:
+   * @example { "name": "pons_escrow_balance", "arguments": { "recipient": "0x…" } }
+   */
   {
     name: 'pons_escrow_balance',
     description: 'Read a creator or protocol recipient\'s claimable native ETH balance on the pons v2 fee escrow. Read-only — claiming is a separate wallet action on the escrow contract.',
@@ -104,6 +179,14 @@ const TOOLS = [
       required: ['recipient'], additionalProperties: false,
     },
   },
+  /**
+   * pons_escrow_token_balance — Claimable ERC-20 balance on the v2 fee escrow (quote asset or buyback vest). Read-only.
+   *
+   * @param recipient - recipient address (0x…), required
+   * @param token - quote asset or launch-token address (0x…), required
+   * @example tools/call request body:
+   * @example { "name": "pons_escrow_token_balance", "arguments": { "recipient": "0x…", "token": "0x…" } }
+   */
   {
     name: 'pons_escrow_token_balance',
     description: 'Read a recipient\'s claimable ERC-20 balance on the pons v2 fee escrow (custom-pair quote asset, or launch-token buyback vest). Read-only.',
@@ -116,6 +199,13 @@ const TOOLS = [
       required: ['recipient', 'token'], additionalProperties: false,
     },
   },
+  /**
+   * pons_launch_feed — Recent pons launches from the official v1 feed.
+   *
+   * @param limit - how many launches to return, 1-50, optional (default 10)
+   * @example tools/call request body:
+   * @example { "name": "pons_launch_feed", "arguments": { "limit": 10 } }
+   */
   {
     name: 'pons_launch_feed',
     description: 'Recent pons token launches from the official launch feed (v1). Returns name, symbol, address, creator, and timing where available.',
@@ -125,6 +215,13 @@ const TOOLS = [
       additionalProperties: false,
     },
   },
+  /**
+   * pons_token_info — ERC-20 metadata (name, symbol, decimals, total supply) for any token on Robinhood Chain.
+   *
+   * @param token - token contract address (0x…), required
+   * @example tools/call request body:
+   * @example { "name": "pons_token_info", "arguments": { "token": "0x…" } }
+   */
   {
     name: 'pons_token_info',
     description: 'Read on-chain ERC-20 metadata for any token on Robinhood Chain: name, symbol, decimals, total supply.',
@@ -134,6 +231,13 @@ const TOOLS = [
       required: ['token'],
     },
   },
+  /**
+   * pons_balance — Agent wallet balance for a token (defaults to USDG). Requires PONSMCP_PRIVATE_KEY.
+   *
+   * @param token - token address or ticker (USDG, PONS, NVDA, …), optional (default USDG)
+   * @example tools/call request body:
+   * @example { "name": "pons_balance", "arguments": { "token": "USDG" } }
+   */
   {
     name: 'pons_balance',
     description: 'Get the agent wallet balance for a token (default USDG) on Robinhood Chain.',
@@ -142,6 +246,13 @@ const TOOLS = [
       properties: { token: { type: 'string', description: 'Token address; default USDG settlement token' } },
     },
   },
+  /**
+   * pons_quote — Convert a USD amount into USDG base units (6 decimals). Quote only — nothing executes.
+   *
+   * @param amountUsd - USD amount as a decimal string, e.g. "5.00", required
+   * @example tools/call request body:
+   * @example { "name": "pons_quote", "arguments": { "amountUsd": "5.00" } }
+   */
   {
     name: 'pons_quote',
     description: 'Quote a payment: converts a USD amount into USDG base units (6 decimals) and returns the settlement plan without executing.',
@@ -151,6 +262,15 @@ const TOOLS = [
       required: ['amountUsd'],
     },
   },
+  /**
+   * pons_pay — Execute an autonomous payment: policy check → USDG transfer → verified receipt. Requires PONSMCP_PRIVATE_KEY.
+   *
+   * @param payTo - recipient address (0x…), required
+   * @param amountUsd - USD amount as a decimal string, e.g. "5.00", required
+   * @param waitMs - max ms to wait for the receipt, optional (default 30000)
+   * @example tools/call request body:
+   * @example { "name": "pons_pay", "arguments": { "payTo": "0x…", "amountUsd": "2.50" } }
+   */
   {
     name: 'pons_pay',
     description: 'Execute an autonomous MPP payment: policy check, then transfer USDG on Robinhood Chain to the payTo address, then verify the on-chain receipt. Requires PONSMCP_PRIVATE_KEY env. Guards: policy limits, balance check, receipt verification.',
@@ -164,6 +284,14 @@ const TOOLS = [
       required: ['payTo', 'amountUsd'],
     },
   },
+  /**
+   * pons_pay_resource — Fetch a 402-gated resource, parse its price, settle exactly that price with policy checks. Requires PONSMCP_PRIVATE_KEY.
+   *
+   * @param url - http(s) URL of the 402-gated resource, required
+   * @param waitMs - max ms to wait for the receipt, optional (default 30000)
+   * @example tools/call request body:
+   * @example { "name": "pons_pay_resource", "arguments": { "url": "https://api.example.com/brief" } }
+   */
   {
     name: 'pons_pay_resource',
     description: 'Fetch an HTTP resource that answers 402 PAYMENT-REQUIRED, parse the price and recipient, and settle exactly that price in USDG on Robinhood Chain with full policy checks. Nothing broadcasts unless the 402 parses. Requires PONSMCP_PRIVATE_KEY env.',
@@ -176,6 +304,13 @@ const TOOLS = [
       required: ['url'],
     },
   },
+  /**
+   * pons_tx_status — Look up a transaction receipt: status, block, gas, decoded ERC-20 transfers.
+   *
+   * @param txHash - transaction hash (0x…, 64 hex), required
+   * @example tools/call request body:
+   * @example { "name": "pons_tx_status", "arguments": { "txHash": "0x…" } }
+   */
   {
     name: 'pons_tx_status',
     description: 'Look up a transaction receipt on Robinhood Chain: status, block, gas used, and decoded ERC-20 transfers.',
@@ -185,12 +320,67 @@ const TOOLS = [
       required: ['txHash'],
     },
   },
+  // ── x402 compatibility ─────────────────────────────────────────────────────
+  /**
+   * x402_fetch — Fetch any URL with x402 auto-settlement: on a 402 with an X-PAYMENT requirement, pay exactly that price (policy-checked) and retry with the signed proof header. Requires PONSMCP_PRIVATE_KEY.
+   *
+   * @param url - http(s) URL to fetch, required
+   * @param waitMs - max ms to wait for the settlement receipt, optional (default 30000)
+   * @example tools/call request body:
+   * @example { "name": "x402_fetch", "arguments": { "url": "https://api.example.com/premium-data" } }
+   */
+  {
+    name: 'x402_fetch',
+    description: 'Fetch any URL with x402 (HTTP 402) auto-settlement: if the server answers 402 PAYMENT-REQUIRED with an X-PAYMENT requirement, pays the exact price in USDG on Robinhood Chain via policy-checked payment, then retries the request with the signed X-PAYMENT proof header attached and returns the final response. Requires PONSMCP_PRIVATE_KEY env.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'http(s) URL to fetch' },
+        waitMs: { type: 'number', description: 'Max ms to wait for the settlement receipt (default 30000)' },
+      },
+      required: ['url'],
+      additionalProperties: false,
+    },
+  },
+  /**
+   * x402_discover — Probe a domain for x402 paid resources via /.well-known/x402 and /api/x402/manifest. Read-only.
+   *
+   * @param domain - domain to probe, e.g. "api.example.com", required
+   * @example tools/call request body:
+   * @example { "name": "x402_discover", "arguments": { "domain": "api.example.com" } }
+   */
+  {
+    name: 'x402_discover',
+    description: 'Probe a domain for x402 paid resources: checks /.well-known/x402 and /api/x402/manifest and returns the paid resources found with prices, recipients, and descriptions. Read-only — nothing is paid.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        domain: { type: 'string', description: 'Domain to probe, e.g. "api.example.com" (scheme optional)' },
+      },
+      required: ['domain'],
+      additionalProperties: false,
+    },
+  },
   // ── Stock tokens ─────────────────────────────────────────────────────────
+  /**
+   * pons_stocks_list — All 19 tokenized stock tokens on Robinhood Chain with contract addresses.
+   *
+   * @param none - this tool takes no arguments
+   * @example tools/call request body:
+   * @example { "name": "pons_stocks_list", "arguments": {} }
+   */
   {
     name: 'pons_stocks_list',
     description: 'List all 19 Robinhood Chain tokenized stock tokens with their on-chain contract addresses. These are tokenized debt securities, not equity shares.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   },
+  /**
+   * pons_stock_price — Live DEX price, liquidity, and 24h change for a stock token.
+   *
+   * @param ticker - stock ticker (e.g. NVDA) or 0x contract address, required
+   * @example tools/call request body:
+   * @example { "name": "pons_stock_price", "arguments": { "ticker": "NVDA" } }
+   */
   {
     name: 'pons_stock_price',
     description: 'Get live DEX price, liquidity, and 24h change for a Robinhood Chain stock token. Pass a ticker (NVDA, AAPL, TSLA…) or the contract address.',
@@ -200,6 +390,13 @@ const TOOLS = [
       required: ['ticker'], additionalProperties: false,
     },
   },
+  /**
+   * pons_stock_info — On-chain metadata (name, symbol, supply) for a stock token.
+   *
+   * @param ticker - stock ticker (e.g. NVDA) or 0x contract address, required
+   * @example tools/call request body:
+   * @example { "name": "pons_stock_info", "arguments": { "ticker": "NVDA" } }
+   */
   {
     name: 'pons_stock_info',
     description: 'Read on-chain metadata (name, symbol, total supply) for a Robinhood Chain stock token. Pass ticker or address.',
@@ -209,6 +406,14 @@ const TOOLS = [
       required: ['ticker'], additionalProperties: false,
     },
   },
+  /**
+   * pons_stocks_screen — Screen all 19 stock tokens with live DEX data; filter and rank. Slow (batch DexScreener).
+   *
+   * @param minLiquidityUsd - minimum liquidity filter in USD, optional (default 0)
+   * @param gradeA - only return Grade A tokens (liq>$500, change>-50%), optional
+   * @example tools/call request body:
+   * @example { "name": "pons_stocks_screen", "arguments": { "gradeA": true } }
+   */
   {
     name: 'pons_stocks_screen',
     description: 'Screen all 19 stock tokens: fetches live DEX data for each and returns ranked list. Filters: minLiquidityUsd, gradeA (notifier.py Grade A logic). Slow — makes batch DexScreener call.',
@@ -222,6 +427,13 @@ const TOOLS = [
     },
   },
   // ── Pons launch screening ─────────────────────────────────────────────────
+  /**
+   * pons_graduated_launches — pons v1 launches that have graduated (reached their liquidity threshold).
+   *
+   * @param limit - max feed entries to scan, optional (default 20, max 50)
+   * @example tools/call request body:
+   * @example { "name": "pons_graduated_launches", "arguments": { "limit": 20 } }
+   */
   {
     name: 'pons_graduated_launches',
     description: 'Return pons v1 launches that have graduated (reached their liquidity threshold). Pulls the launch feed then filters by graduation status.',
@@ -231,6 +443,14 @@ const TOOLS = [
       additionalProperties: false,
     },
   },
+  /**
+   * pons_launch_ranking — Rank recent launches by graduation, liquidity, or 24h change with signal tiers.
+   *
+   * @param limit - launches to fetch from the feed before ranking, optional (default 20, max 50)
+   * @param sortBy - "graduation" | "liquidity" | "change24h", optional (default graduation)
+   * @example tools/call request body:
+   * @example { "name": "pons_launch_ranking", "arguments": { "limit": 20, "sortBy": "graduation" } }
+   */
   {
     name: 'pons_launch_ranking',
     description: 'Rank recent pons launches by graduation progress, liquidity, or 24h price change. Returns labeled Grade A / Early Watch / Watch / Low signal tiers matching the notifier.py screening logic.',
@@ -244,6 +464,16 @@ const TOOLS = [
     },
   },
   // ── Wallet / transfer ─────────────────────────────────────────────────────
+  /**
+   * pons_send_token — Send any ERC-20 token on Robinhood Chain with policy caps. Requires PONSMCP_PRIVATE_KEY.
+   *
+   * @param to - recipient address (0x…), required
+   * @param token - token address or ticker (USDG, PONS, NVDA, …), required
+   * @param amount - human decimal amount, e.g. "5.00", required
+   * @param waitMs - max ms to wait for the receipt, optional (default 30000)
+   * @example tools/call request body:
+   * @example { "name": "pons_send_token", "arguments": { "to": "0x…", "token": "USDG", "amount": "5.00" } }
+   */
   {
     name: 'pons_send_token',
     description: 'Send any ERC-20 token on Robinhood Chain (USDG, PONS, stock token, or custom). Requires PONSMCP_PRIVATE_KEY env. Policy caps apply (100 USDG/tx, 1000 USDG/day equivalent).',
@@ -258,6 +488,15 @@ const TOOLS = [
       required: ['to', 'token', 'amount'], additionalProperties: false,
     },
   },
+  /**
+   * pons_send_eth — Send native ETH (gas token) on Robinhood Chain. Caps: 0.01 ETH/tx, 0.1 ETH/day. Requires PONSMCP_PRIVATE_KEY.
+   *
+   * @param to - recipient address (0x…), required
+   * @param amountEth - ETH amount as a decimal string, e.g. "0.001", required
+   * @param waitMs - max ms to wait for the receipt, optional (default 30000, clamped 120000)
+   * @example tools/call request body:
+   * @example { "name": "pons_send_eth", "arguments": { "to": "0x…", "amountEth": "0.001" } }
+   */
   {
     name: 'pons_send_eth',
     description: 'Send native ETH (gas token) on Robinhood Chain. Requires PONSMCP_PRIVATE_KEY env.',
@@ -409,6 +648,23 @@ async function callTool(name: string, args: Record<string, any>): Promise<unknow
       if (!/^https?:\/\//i.test(url)) throw new Error(`invalid resource URL: ${url}`);
       const client = new PonsMCPClient({ privateKey: process.env.PONSMCP_PRIVATE_KEY });
       return payForResource(client, url, { waitMs: args.waitMs ? Number(args.waitMs) : undefined });
+    }
+    // ── x402 compatibility ────────────────────────────────────────────────────
+    case 'x402_fetch': {
+      const url = String(args.url ?? '');
+      if (!/^https?:\/\//i.test(url)) throw new Error(`invalid URL: ${url}`);
+      const client = new PonsMCPClient({ privateKey: process.env.PONSMCP_PRIVATE_KEY });
+      const x402 = new X402Client(client);
+      return x402.fetch(url, {}, { waitMs: args.waitMs ? Number(args.waitMs) : undefined });
+    }
+    case 'x402_discover': {
+      const domain = String(args.domain ?? '').trim();
+      // Bare domain ("api.example.com"), full origin ("http://host:8080"),
+      // IPv4 ("http://127.0.0.1:8080"), or localhost.
+      if (!/^(https?:\/\/)?(([a-z0-9-]+\.)+[a-z]{2,}|(\d{1,3}\.){3}\d{1,3}|localhost)(:\d+)?\/?$/i.test(domain)) throw new Error(`invalid domain: ${domain}`);
+      const client = new PonsMCPClient({ privateKey: process.env.PONSMCP_PRIVATE_KEY });
+      const x402 = new X402Client(client);
+      return x402.discover(domain);
     }
     // ── Stock tokens ────────────────────────────────────────────────────────
     case 'pons_stocks_list': {

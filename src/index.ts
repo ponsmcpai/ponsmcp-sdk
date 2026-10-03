@@ -212,6 +212,20 @@ export class PonsMCPClient {
 }
 
 export { payForResource, parse402, type ResourcePayment } from './resource.js';
+export {
+  X402Client,
+  parse402Response,
+  isX402Response,
+  settleX402,
+  encodePaymentHeader,
+  type X402Requirement,
+  type X402PaymentRequired,
+  type X402SettleResult,
+  type X402FetchResult,
+  type X402Resource,
+  type X402DiscoverResult,
+  type X402PaymentPayload,
+} from './x402.js';
 
 // re-exports
 export { CHAIN };
