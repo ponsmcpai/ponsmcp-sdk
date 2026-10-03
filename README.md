@@ -46,7 +46,7 @@ ponsmcp server ──── policy.ts ── caps: 100 USDG/tx, 1,000/day (check
    └─► DexScreener ── pons market data
 ```
 
-## The 14 tools
+## The 25 tools
 
 | Tool | Key? | What it does |
 |---|:-:|---|

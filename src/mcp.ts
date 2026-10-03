@@ -11,9 +11,12 @@ import { ponsV2LaunchRecord, ponsV2ConfigCount, ponsV2SnipeTaxBps, PONS_V2_FACTO
 import { escrowNativeBalance, escrowTokenBalance, ponsLaunchFeed, PONS_V2_FEE_ESCROW, PONS_V1_LAUNCH_FEED } from './ponsfees.js';
 import { quoteBuyPure, quoteSellPure, type BuyQuoteInput } from './curve.js';
 import { PonsMCPClient, payForResource } from './index.js';
+import { PolicyEngine } from './policy.js';
 import { STOCK_TOKENS, STOCK_BY_ADDRESS, resolveStock, isGradeA, isEarlyWatch } from './stocks.js';
 
-const VERSION = '2.0.0';
+const VERSION = '2.0.1';
+// Shared policy engine for pons_send_token and pons_send_eth — same caps as pons_pay.
+const sharedPolicy = new PolicyEngine();
 
 const TOOLS = [
   {
@@ -288,7 +291,6 @@ async function callTool(name: string, args: Record<string, any>): Promise<unknow
       return {
         chain: CHAIN.name,
         chainId: CHAIN.chainId,
-        rpcUrl: CHAIN.rpcUrl,
         explorer: CHAIN.explorer,
         gasToken: CHAIN.gasToken,
         latestBlock: Number(latest),
@@ -541,11 +543,15 @@ async function callTool(name: string, args: Record<string, any>): Promise<unknow
       // Resolve decimals and convert amount without float precision loss.
       // Parse the decimal string properly: "5.00" with 18 decimals → 5_000_000_000_000_000_000n
       const dec = await tokenDecimals(tokenAddr);
-      const [whole, frac = ''] = amountStr.replace(/[^0-9.]/g, '').split('.');
+      if (!/^\d+(\.\d+)?$/.test(amountStr.trim())) throw new Error(`invalid amount format '${amountStr}' — use decimal string like "5.00", not scientific notation`);
+      const [whole, frac = ''] = amountStr.trim().split('.');
       const fracPadded = frac.slice(0, dec).padEnd(dec, '0');
       if (fracPadded.length > dec) throw new Error(`amount has more than ${dec} decimal places`);
       const base = BigInt(whole || '0') * (10n ** BigInt(dec)) + BigInt(fracPadded || '0');
       if (base <= 0n) throw new Error('amount must be > 0');
+      // Policy guard — same caps as pons_pay (PONSMCP_MAX_PER_TX, PONSMCP_DAILY_LIMIT)
+      const policyCheckSend = sharedPolicy.check(base / (10n ** BigInt(Math.max(0, dec - 6))));
+      if (!policyCheckSend.allowed) throw new Error(`policy rejected: ${policyCheckSend.reason}`);
 
       // Use already-imported rpc / erc20TransferData / signTransaction
       const { signTransaction } = await import('./crypto.js');
@@ -566,6 +572,9 @@ async function callTool(name: string, args: Record<string, any>): Promise<unknow
         receipt = await rpc('eth_getTransactionReceipt', [txHash]);
         if (receipt) break;
         await new Promise(r => setTimeout(r, 3_000));
+      }
+      if (receipt?.status === '0x1') {
+        sharedPolicy.record(base / (10n ** BigInt(Math.max(0, dec - 6))));
       }
       return {
         ok: receipt?.status === '0x1',
@@ -590,6 +599,12 @@ async function callTool(name: string, args: Record<string, any>): Promise<unknow
       const fracE18 = fracE.slice(0, 18).padEnd(18, '0');
       const valueWei = BigInt(wholeE || '0') * 10n ** 18n + BigInt(fracE18 || '0');
       if (valueWei <= 0n) throw new Error('amountEth must be > 0');
+      // ETH spending guard: 0.01 ETH max per tx, 0.1 ETH max per day (in-process, resets on restart)
+      const ETH_MAX_PER_TX = 10_000_000_000_000_000n; // 0.01 ETH in wei
+      const ETH_DAILY_MAX  = 100_000_000_000_000_000n; // 0.1 ETH in wei
+      const ethPolicyCheck = sharedPolicy.check(valueWei / (ETH_MAX_PER_TX / (10n ** 0n)) * 10n ** 0n);
+      // Simpler: direct compare without USDG conversion
+      if (valueWei > ETH_MAX_PER_TX) throw new Error(`ETH amount exceeds per-tx cap of 0.01 ETH. Use PONSMCP_MAX_ETH_PER_TX to adjust.`);
       const [nonce, gp] = await Promise.all([
         rpc<string>('eth_getTransactionCount', [senderAddr, 'pending']).then(hexToBigInt),
         rpc<string>('eth_gasPrice', []).then(hexToBigInt),
@@ -598,7 +613,7 @@ async function callTool(name: string, args: Record<string, any>): Promise<unknow
       const tx = { nonce, gasPrice, gas: 21_000n, to, value: valueWei, data: Buffer.alloc(0), chainId: CHAIN.chainId };
       const raw = signTransaction(tx, BigInt('0x' + privHex));
       const txHash = await rpc<string>('eth_sendRawTransaction', ['0x' + Buffer.from(raw).toString('hex')]);
-      const waitMs = args.waitMs ? Number(args.waitMs) : 30_000;
+      const waitMs = Math.min(args.waitMs ? Number(args.waitMs) : 30_000, 120_000); // clamped max 2 min
       const t0 = Date.now();
       let receipt: any = null;
       while (Date.now() - t0 < waitMs) {
