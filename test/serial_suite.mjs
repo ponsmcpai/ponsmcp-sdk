@@ -6,12 +6,14 @@ import { createInterface } from 'node:readline';
 const ALCHEMY = 'alch_wXyV1PsUL90Ki4-BYN1WP';
 
 const tests = [
+  { name: 'pons_chains',              args: {} },
   { name: 'pons_chain_info',         args: {} },
   { name: 'pons_price',               args: {} },
   { name: 'pons_stocks_list',          args: {} },
   { name: 'pons_stock_price',          args: { ticker: 'NVDA' } },
   { name: 'pons_stock_info',           args: { ticker: 'AAPL' } },
   { name: 'pons_quote',               args: { amountUsd: '5.00' } },
+  { name: 'pons_quote',               args: { amountUsd: '10.00', chain: 8453 } },
   { name: 'pons_token_info',           args: { token: '0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168' } },
   { name: 'pons_launch_feed',          args: { limit: 3 } },
   { name: 'pons_launch_ranking',        args: { limit: 10, sortBy: 'graduation' } },

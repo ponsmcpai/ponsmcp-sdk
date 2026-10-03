@@ -3,7 +3,7 @@
 // All output text is English only.
 
 import { createInterface } from 'node:readline';
-import { CHAIN, rpc, hexToBigInt, unitToString, isAddress, ethCall, erc20TransferData } from './chain.js';
+import { CHAIN, SUPPORTED_CHAINS, getActiveChain, rpc, hexToBigInt, unitToString, isAddress, ethCall, erc20TransferData } from './chain.js';
 import { tokenName, tokenSymbol, tokenDecimals, totalSupply, balanceOf } from './erc20.js';
 import { ponsPairs, ponsBest, tokenPairs } from './dexscreener.js';
 import { ponsLaunchInfo } from './pons.js';
@@ -13,15 +13,29 @@ import { quoteBuyPure, quoteSellPure, type BuyQuoteInput } from './curve.js';
 import { PonsMCPClient, payForResource } from './index.js';
 import { X402Client } from './x402.js';
 import { PolicyEngine } from './policy.js';
+import { MandateEngine } from './mandate.js';
 import { STOCK_TOKENS, STOCK_BY_ADDRESS, resolveStock, isGradeA, isEarlyWatch } from './stocks.js';
 
-const VERSION = '2.2.1';
+const VERSION = '2.3.0';
+const mandateEngine = new MandateEngine();
 // Shared policy engine for pons_send_token and pons_send_eth — same caps as pons_pay.
 const sharedPolicy = new PolicyEngine();
 
 const TOOLS = [
   /**
-   * pons_chain_info — Robinhood Chain network facts.
+   * pons_chains — List all supported chains.
+   *
+   * @param none - this tool takes no arguments
+   * @example tools/call request body:
+   * @example { "name": "pons_chains", "arguments": {} }
+   */
+  {
+    name: 'pons_chains',
+    description: 'List all chains supported by PonsMCP with name, chainId, settlement asset, explorer URL, and status (active/beta). No key required. Robinhood Chain 4663 is active; Base 8453 is beta (read-only tools verified; write ops not tested on Base).',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  /**
+   * pons_chain_info — Network facts for the active chain + all supported chains.
    *
    * @param none - this tool takes no arguments
    * @example tools/call request body:
@@ -29,7 +43,7 @@ const TOOLS = [
    */
   {
     name: 'pons_chain_info',
-    description: 'Get Robinhood Chain network info: chainId, RPC, explorer, and the canonical PONS / USDG / WETH token addresses.',
+    description: 'Get active chain network info: chainId, RPC, explorer, settlement token address, and the canonical PONS / USDG / WETH addresses (Robinhood Chain). Also returns all supported chains. Set PONSMCP_CHAIN=8453 to switch to Base.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   },
   /**
@@ -247,6 +261,28 @@ const TOOLS = [
     },
   },
   /**
+   * pons_receive — Watch for incoming ERC-20 transfers to the agent wallet. Read-only, no spending.
+   *
+   * @param token - token address or ticker to watch (default USDG), optional
+   * @param minAmount - minimum transfer amount in human units to report (default "0"), optional
+   * @param waitSeconds - seconds to poll for incoming transfers, 1–120 (default 30), optional
+   * @example tools/call request body:
+   * @example { "name": "pons_receive", "arguments": { "token": "USDG", "waitSeconds": 30 } }
+   */
+  {
+    name: 'pons_receive',
+    description: 'Watch for incoming ERC-20 transfers (default USDG) to the agent wallet on Robinhood Chain. Polls eth_getLogs for Transfer events for up to waitSeconds (max 120). Read-only — requires PONSMCP_PRIVATE_KEY to know the agent address. Returns {received, transfers:[{from,value,txHash}]}.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        token:       { type: 'string', description: 'Token address or ticker (USDG, PONS, WETH…); default USDG' },
+        minAmount:   { type: 'string', description: 'Min human-readable amount to report, e.g. "1.00"; default "0"' },
+        waitSeconds: { type: 'number', description: 'Seconds to wait for incoming transfer, 1–120; default 30' },
+      },
+      additionalProperties: false,
+    },
+  },
+  /**
    * pons_quote — Convert a USD amount into USDG base units (6 decimals). Quote only — nothing executes.
    *
    * @param amountUsd - USD amount as a decimal string, e.g. "5.00", required
@@ -255,10 +291,13 @@ const TOOLS = [
    */
   {
     name: 'pons_quote',
-    description: 'Quote a payment: converts a USD amount into USDG base units (6 decimals) and returns the settlement plan without executing.',
+    description: 'Quote a payment: converts a USD amount into settlement-token base units (6 decimals) and returns the settlement plan without executing. Optionally pass chain (4663 or 8453) to quote for a specific chain; omit to use the active chain. Always returns costs for both chains for comparison.',
     inputSchema: {
       type: 'object',
-      properties: { amountUsd: { type: 'string', description: 'USD amount, e.g. "5.00"' } },
+      properties: {
+        amountUsd: { type: 'string', description: 'USD amount, e.g. "5.00"' },
+        chain: { type: 'number', description: 'Chain ID to quote for (4663 or 8453). Defaults to active chain (PONSMCP_CHAIN env).' },
+      },
       required: ['amountUsd'],
     },
   },
@@ -640,6 +679,63 @@ const TOOLS = [
       additionalProperties: false,
     },
   },
+  // ── Signed spending mandates ───────────────────────────────────────────────
+  /**
+   * pons_create_mandate — Generate an EIP-712 mandate struct + hash for offline signing.
+   *
+   * @param spender - agent wallet address authorized to spend (0x…), required
+   * @param merchant - merchant/recipient address (0x…), required
+   * @param maxAmountUsdg - maximum USDG in micro-units (6 decimals), e.g. "5000000" for 5 USDG, required
+   * @param validUntilIso - ISO-8601 expiry datetime string, e.g. "2025-12-31T23:59:59Z", required
+   * @param nonce - unique nonce as decimal string (default: current timestamp ms), optional
+   * @example { "name": "pons_create_mandate", "arguments": { "spender": "0x…", "merchant": "0x…", "maxAmountUsdg": "5000000", "validUntilIso": "2025-12-31T23:59:59Z" } }
+   */
+  {
+    name: 'pons_create_mandate',
+    description: 'Generate an EIP-712 signed spending mandate: creates a typed-data struct that authorizes the agent (spender) to pay up to maxAmountUsdg USDG to a specific merchant before the expiry. Returns the typed data JSON ready for MetaMask/frame eth_signTypedData_v4 signing. No key needed — the user signs offline.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        spender: { type: 'string', description: 'Agent wallet address authorized to spend (0x...)' },
+        merchant: { type: 'string', description: 'Merchant/recipient address (0x...)' },
+        maxAmountUsdg: { type: 'string', description: 'Max USDG in micro-units (6 decimals), e.g. "5000000" = 5 USDG' },
+        validUntilIso: { type: 'string', description: 'ISO-8601 expiry, e.g. "2025-12-31T23:59:59Z"' },
+        nonce: { type: 'string', description: 'Unique nonce as decimal string (default: current ms timestamp)' },
+      },
+      required: ['spender', 'merchant', 'maxAmountUsdg', 'validUntilIso'],
+      additionalProperties: false,
+    },
+  },
+  /**
+   * pons_verify_mandate — Verify a mandate + EIP-712 signature.
+   *
+   * @param spender - agent wallet address in the mandate (0x…), required
+   * @param merchant - merchant address in the mandate (0x…), required
+   * @param maxAmountUsdg - max USDG micro-units string, required
+   * @param validUntil - unix timestamp (seconds) as decimal string, required
+   * @param nonce - nonce as decimal string, required
+   * @param signature - 65-byte EIP-712 signature hex (0x + 130 hex chars), required
+   * @param signer - address expected to have signed the mandate (the user/owner), required
+   * @example { "name": "pons_verify_mandate", "arguments": { "spender": "0x…", "merchant": "0x…", "maxAmountUsdg": "5000000", "validUntil": "1735689599", "nonce": "1700000000000", "signature": "0x…", "signer": "0x…" } }
+   */
+  {
+    name: 'pons_verify_mandate',
+    description: 'Verify a mandate + its EIP-712 signature. Recovers the signer and checks expiry. Returns {valid, reason, spender, merchant, maxAmountUsdg, validUntil}. No key needed.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        spender: { type: 'string', description: 'Agent wallet address in the mandate (0x...)' },
+        merchant: { type: 'string', description: 'Merchant address (0x...)' },
+        maxAmountUsdg: { type: 'string', description: 'Max USDG micro-units as decimal string' },
+        validUntil: { type: 'string', description: 'Expiry as unix seconds decimal string' },
+        nonce: { type: 'string', description: 'Nonce as decimal string' },
+        signature: { type: 'string', description: '65-byte EIP-712 signature (0x + 130 hex chars)' },
+        signer: { type: 'string', description: 'Address expected to have signed (the user/owner) (0x...)' },
+      },
+      required: ['spender', 'merchant', 'maxAmountUsdg', 'validUntil', 'nonce', 'signature', 'signer'],
+      additionalProperties: false,
+    },
+  },
 ];
 
 function jsonSafe(v: unknown): string {
@@ -652,19 +748,41 @@ function jsonSafe(v: unknown): string {
 
 async function callTool(name: string, args: Record<string, any>): Promise<unknown> {
   switch (name) {
+    case 'pons_chains': {
+      const chains = Object.values(SUPPORTED_CHAINS).map((c) => ({
+        name: c.name,
+        chainId: c.chainId,
+        settlementAsset: c.settlementSymbol,
+        settlementToken: c.settlementToken,
+        explorer: c.explorer,
+        status: c.status,
+      }));
+      const active = getActiveChain();
+      return { activeChainId: active.chainId, chains };
+    }
     case 'pons_chain_info': {
+      const active = getActiveChain();
       const [latest, gas] = await Promise.all([
         rpc<string>('eth_blockNumber', []).then(hexToBigInt),
         rpc<string>('eth_gasPrice', []).then(hexToBigInt),
       ]);
       return {
-        chain: CHAIN.name,
-        chainId: CHAIN.chainId,
-        explorer: CHAIN.explorer,
-        gasToken: CHAIN.gasToken,
-        latestBlock: Number(latest),
-        gasPriceGwei: Number(unitToString(gas, 9)),
+        activeChain: {
+          chain: active.name,
+          chainId: active.chainId,
+          explorer: active.explorer,
+          gasToken: active.gasToken,
+          settlementAsset: active.settlementSymbol,
+          settlementToken: active.settlementToken,
+          latestBlock: Number(latest),
+          gasPriceGwei: Number(unitToString(gas, 9)),
+        },
+        // Robinhood-specific constants (legacy compat)
         tokens: { pons: CHAIN.pons, usdg: CHAIN.usdg, weth: CHAIN.weth },
+        supportedChains: Object.values(SUPPORTED_CHAINS).map((c) => ({
+          name: c.name, chainId: c.chainId, settlementAsset: c.settlementSymbol, status: c.status,
+        })),
+        note: 'Set PONSMCP_CHAIN=8453 to activate Base. Default: 4663 (Robinhood Chain).',
       };
     }
     case 'pons_price': {
@@ -764,12 +882,133 @@ async function callTool(name: string, args: Record<string, any>): Promise<unknow
       }
       return result;
     }
+    case 'pons_receive': {
+      // ── pons_receive: watch for incoming ERC-20 transfers to the agent wallet ──
+      const privKey = process.env.PONSMCP_PRIVATE_KEY;
+      if (!privKey) throw new Error('PONSMCP_PRIVATE_KEY env not set — pons_receive needs it to derive the agent address.');
+      const agentClient = new PonsMCPClient({ privateKey: privKey });
+      const agentAddress = agentClient.address!.toLowerCase();
+
+      // Resolve token
+      const rawToken = args.token ? String(args.token) : 'USDG';
+      let watchToken: string;
+      let watchDecimals: number;
+      if (isAddress(rawToken)) {
+        watchToken = rawToken.toLowerCase();
+        watchDecimals = await tokenDecimals(rawToken).catch(() => 18);
+      } else {
+        const up = rawToken.toUpperCase().trim();
+        if (up === 'USDG')      { watchToken = CHAIN.usdg.toLowerCase(); watchDecimals = CHAIN.usdgDecimals; }
+        else if (up === 'PONS') { watchToken = CHAIN.pons.toLowerCase(); watchDecimals = 18; }
+        else if (up === 'WETH') { watchToken = CHAIN.weth.toLowerCase(); watchDecimals = 18; }
+        else {
+          const s = resolveStock(up);
+          if (s) { watchToken = s.address.toLowerCase(); watchDecimals = 18; }
+          else throw new Error(`Cannot resolve token "${rawToken}" — pass a 0x address or ticker.`);
+        }
+      }
+
+      const minAmountStr = String(args.minAmount ?? '0');
+      const minRaw = BigInt(Math.round(parseFloat(minAmountStr) * 10 ** watchDecimals));
+      const waitSec = Math.min(120, Math.max(1, Number(args.waitSeconds ?? 30)));
+
+      // Snapshot start block
+      const startBlockHex = await rpc<string>('eth_blockNumber', []);
+      const startBlock = hexToBigInt(startBlockHex);
+
+      // Transfer(address indexed from, address indexed to, uint256 value)
+      // topic[2] = to address (padded)
+      const TRANSFER_TOPIC_LOCAL = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
+      const agentTopic = '0x' + agentAddress.replace(/^0x/, '').padStart(64, '0');
+
+      interface TransferHit { from: string; value: string; valueRaw: string; txHash: string; blockNumber: number }
+      const seen = new Set<string>();
+      const transfers: TransferHit[] = [];
+
+      const deadline = Date.now() + waitSec * 1000;
+      let latestPolled = startBlock;
+
+      while (Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, 3000));
+        const nowHex = await rpc<string>('eth_blockNumber', []);
+        const nowBlock = hexToBigInt(nowHex);
+        if (nowBlock <= latestPolled) continue;
+
+        const logs = await rpc<Array<{
+          address: string; topics: string[]; data: string;
+          transactionHash: string; blockNumber: string;
+        }>>('eth_getLogs', [{
+          fromBlock: '0x' + (latestPolled + 1n).toString(16),
+          toBlock:   '0x' + nowBlock.toString(16),
+          address:   watchToken,
+          topics:    [TRANSFER_TOPIC_LOCAL, null, agentTopic],
+        }]);
+
+        for (const log of logs) {
+          if (log.address.toLowerCase() !== watchToken) continue;
+          if (log.topics[0]?.toLowerCase() !== TRANSFER_TOPIC_LOCAL) continue;
+          if (seen.has(log.transactionHash)) continue;
+          seen.add(log.transactionHash);
+
+          const raw = hexToBigInt(log.data);
+          if (raw < minRaw) continue;
+
+          const from = '0x' + (log.topics[1] ?? '').slice(-40);
+          const human = unitToString(raw, watchDecimals);
+          transfers.push({
+            from,
+            value: human,
+            valueRaw: raw.toString(),
+            txHash: log.transactionHash,
+            blockNumber: Number(hexToBigInt(log.blockNumber)),
+          });
+        }
+
+        latestPolled = nowBlock;
+        if (transfers.length > 0) break; // got at least one hit
+      }
+
+      return {
+        received: transfers.length > 0,
+        agentAddress,
+        token: watchToken,
+        minAmount: minAmountStr,
+        waitSeconds: waitSec,
+        transfers,
+        note: transfers.length === 0
+          ? `No incoming transfers detected in ${waitSec}s window (from block ${startBlock}).`
+          : `${transfers.length} transfer(s) received.`,
+      };
+    }
     case 'pons_quote': {
       const client = new PonsMCPClient();
       const q = await client.quote(String(args.amountUsd ?? '0'));
+      // Resolve which chain to show as "primary"
+      const requestedChainId = args.chain ? Number(args.chain) : undefined;
+      const activeChain = getActiveChain();
+      const primaryChain = requestedChainId && SUPPORTED_CHAINS[requestedChainId]
+        ? SUPPORTED_CHAINS[requestedChainId]
+        : activeChain;
+      // Build per-chain quotes (pure math — 1 USD = 1 settlement token unit * 10^6)
+      const chainQuotes = Object.values(SUPPORTED_CHAINS).map((c) => ({
+        chainId: c.chainId,
+        name: c.name,
+        settlementAsset: c.settlementSymbol,
+        settlementToken: c.settlementToken,
+        amountBase: q.amountBase.toString(),
+        amountHuman: q.amountHuman,
+        status: c.status,
+      }));
       return {
-        usd: q.usd, token: CHAIN.usdg, symbol: 'USDG',
-        amountBase: q.amountBase.toString(), amountHuman: q.amountHuman,
+        usd: q.usd,
+        // Primary quote (requested or active chain)
+        chain: primaryChain.chainId,
+        token: primaryChain.settlementToken,
+        symbol: primaryChain.settlementSymbol,
+        amountBase: q.amountBase.toString(),
+        amountHuman: q.amountHuman,
+        // All-chain comparison
+        allChains: chainQuotes,
         note: 'quote only — nothing executed',
       };
     }
@@ -1690,6 +1929,56 @@ async function callTool(name: string, args: Record<string, any>): Promise<unknow
         count: graduations.length,
         graduations,
       };
+    }
+    // ── Signed spending mandates ───────────────────────────────────────────────
+    case 'pons_create_mandate': {
+      const spender = String(args.spender ?? '');
+      const merchant = String(args.merchant ?? '');
+      const maxAmountUsdg = BigInt(String(args.maxAmountUsdg ?? '0'));
+      const validUntilIso = String(args.validUntilIso ?? '');
+      const nonce = args.nonce ? BigInt(String(args.nonce)) : BigInt(Date.now());
+
+      const validUntilMs = Date.parse(validUntilIso);
+      if (isNaN(validUntilMs)) throw new Error(`invalid validUntilIso: ${validUntilIso}`);
+      const validUntil = BigInt(Math.floor(validUntilMs / 1000));
+
+      const { mandate, typedData, hash } = mandateEngine.createMandate({
+        spender, merchant, maxAmountUsdg, validUntil, nonce,
+      });
+
+      const maxUsdgHuman = (Number(maxAmountUsdg) / 1e6).toFixed(6);
+      const expiryHuman = new Date(Number(validUntil) * 1000).toISOString();
+
+      return {
+        mandate: {
+          spender: mandate.spender,
+          merchant: mandate.merchant,
+          maxAmountUsdg: mandate.maxAmountUsdg.toString(),
+          validUntil: mandate.validUntil.toString(),
+          nonce: mandate.nonce.toString(),
+        },
+        eip712Hash: hash,
+        typedData,
+        summary: {
+          maxUsdgHuman,
+          expiryHuman,
+          signingNote: 'Pass typedData to MetaMask eth_signTypedData_v4 (or compatible wallet). Then call pons_verify_mandate with the returned signature to confirm.',
+        },
+      };
+    }
+    case 'pons_verify_mandate': {
+      const { isAddress: _isAddr } = await import('./chain.js');
+      const spender = String(args.spender ?? '').toLowerCase();
+      const merchant = String(args.merchant ?? '').toLowerCase();
+      const maxAmountUsdg = BigInt(String(args.maxAmountUsdg ?? '0'));
+      const validUntil = BigInt(String(args.validUntil ?? '0'));
+      const nonce = BigInt(String(args.nonce ?? '0'));
+      const signature = String(args.signature ?? '');
+      const signer = String(args.signer ?? '');
+
+      const mandate = { spender, merchant, maxAmountUsdg, validUntil, nonce };
+      const result = mandateEngine.verifyMandate(mandate, signature, signer);
+      return result;
     }
     default:
       throw new Error(`unknown tool: ${name}`);

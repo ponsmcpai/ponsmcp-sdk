@@ -1,12 +1,13 @@
 {
   "name": "@ponsmcp/sdk",
-  "version": "2.2.1",
-  "description": "PonsMCP SDK + MCP server - autonomous agent payments (MPP) settled in USDG on Robinhood Chain 4663, with pons launch intelligence tools.",
+  "version": "2.3.0",
+  "description": "PonsMCP SDK + MCP server - autonomous agent payments (MPP) settled in USDG on Robinhood Chain 4663 or USDC on Base 8453, with pons launch intelligence tools.",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
-    "ponsmcp": "dist/mcp.js"
+    "ponsmcp": "dist/mcp.js",
+    "ponsmcp-setup": "dist/setup.js"
   },
   "files": [
     "dist",

@@ -1,8 +1,67 @@
-// Robinhood Chain (4663) low-level JSON-RPC client + ABI helpers.
+// Multi-chain JSON-RPC client + ABI helpers.
+// Supports Robinhood Chain (4663) and Base (8453).
 // Zero external deps — uses global fetch (Node >= 20).
 import { setDefaultAutoSelectFamily } from 'node:net';
 try { setDefaultAutoSelectFamily(true); } catch { /* older node */ }
 
+// ── Chain registry ──────────────────────────────────────────────────────────
+
+export interface ChainConfig {
+  name: string;
+  chainId: number;
+  rpcEndpoints: (alchemyKey?: string) => string[];
+  /** Canonical settlement token address */
+  settlementToken: string;
+  settlementSymbol: string;
+  settlementDecimals: number;
+  explorer: string;
+  gasToken: string;
+  /** Status for informational purposes */
+  status: 'active' | 'beta';
+}
+
+export const SUPPORTED_CHAINS: Record<number, ChainConfig> = {
+  4663: {
+    name: 'Robinhood Chain',
+    chainId: 4663,
+    rpcEndpoints: (alchemyKey?: string) => [
+      ...(alchemyKey ? [`https://robinhood-mainnet.g.alchemy.com/v2/${alchemyKey}`] : []),
+      'https://rpc.nodeflare.app/robinhood/public',
+      'https://lb.routeme.sh/rpc/evm/4663',
+    ],
+    settlementToken: '0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168',
+    settlementSymbol: 'USDG',
+    settlementDecimals: 6,
+    explorer: 'https://robinhoodchain.blockscout.com',
+    gasToken: 'ETH',
+    status: 'active',
+  },
+  8453: {
+    name: 'Base',
+    chainId: 8453,
+    rpcEndpoints: (alchemyKey?: string) => [
+      ...(alchemyKey ? [`https://base-mainnet.g.alchemy.com/v2/${alchemyKey}`] : []),
+      'https://mainnet.base.org',
+    ],
+    settlementToken: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+    settlementSymbol: 'USDC',
+    settlementDecimals: 6,
+    explorer: 'https://basescan.org',
+    gasToken: 'ETH',
+    status: 'beta',
+  },
+};
+
+/** Resolve the active chain from PONSMCP_CHAIN env var (default '4663'). */
+export function getActiveChain(): ChainConfig {
+  const envChain = process.env.PONSMCP_CHAIN ?? '4663';
+  const chainId = Number(envChain);
+  const chain = SUPPORTED_CHAINS[chainId];
+  if (!chain) throw new Error(`PONSMCP_CHAIN="${envChain}" is not supported. Supported chain IDs: ${Object.keys(SUPPORTED_CHAINS).join(', ')}`);
+  return chain;
+}
+
+// ── Legacy CHAIN constant (backward compat, always Robinhood Chain 4663) ───
 export const CHAIN = {
   name: 'Robinhood Chain',
   chainId: 4663,
@@ -48,16 +107,8 @@ async function acquireRpcSlot(): Promise<() => void> {
 function rpcEndpoints(): string[] {
   if (process.env.PONSMCP_RPC_URL) return [process.env.PONSMCP_RPC_URL];
   const alchemyKey = process.env.PONSMCP_ALCHEMY_KEY;
-  return [
-    // Alchemy first when a key is configured — fastest and most reliable in
-    // practice. "rpc.mainnet.chain.robinhood.com" is deliberately NOT in this
-    // list: it resolves (via some ISPs) to a captive/blocked-content page
-    // rather than the chain, and hangs for the full connect timeout instead
-    // of failing fast. Keep it out unless proven otherwise.
-    ...(alchemyKey ? [`https://robinhood-mainnet.g.alchemy.com/v2/${alchemyKey}`] : []),
-    'https://rpc.nodeflare.app/robinhood/public',
-    'https://lb.routeme.sh/rpc/evm/4663',
-  ];
+  const active = getActiveChain();
+  return active.rpcEndpoints(alchemyKey);
 }
 
 export async function rpc<T = any>(method: string, params: unknown[]): Promise<T> {
@@ -129,7 +180,7 @@ export function unitToString(value: bigint, decimals: number): string {
   return `${neg ? '-' : ''}${whole.toString()}${frac ? '.' + frac : ''}`;
 }
 
-/** USD decimal string ("5.00") -> settlement token base units (USDG, 6 decimals). */
+/** USD decimal string ("5.00") -> settlement token base units (6 decimals). */
 export function usdToMicro(usd: string | number): bigint {
   const n = typeof usd === 'string' ? Number.parseFloat(usd) : usd;
   if (!Number.isFinite(n) || n < 0) throw new Error(`invalid USD amount: ${usd}`);
