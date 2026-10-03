@@ -16,7 +16,7 @@ import { PolicyEngine } from './policy.js';
 import { MandateEngine } from './mandate.js';
 import { STOCK_TOKENS, STOCK_BY_ADDRESS, resolveStock, isGradeA, isEarlyWatch } from './stocks.js';
 
-const VERSION = '2.3.0';
+const VERSION = '2.3.1';
 const mandateEngine = new MandateEngine();
 // Shared policy engine for pons_send_token and pons_send_eth — same caps as pons_pay.
 const sharedPolicy = new PolicyEngine();
