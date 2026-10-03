@@ -1934,13 +1934,30 @@ async function callTool(name: string, args: Record<string, any>): Promise<unknow
     case 'pons_create_mandate': {
       const spender = String(args.spender ?? '');
       const merchant = String(args.merchant ?? '');
-      const maxAmountUsdg = BigInt(String(args.maxAmountUsdg ?? '0'));
-      const validUntilIso = String(args.validUntilIso ?? '');
+      // maxAmountUsdg accepts human decimal ("10.00") or base units ("10000000")
+      const maxAmtRaw = String(args.maxAmountUsdg ?? '0');
+      let maxAmountUsdg: bigint;
+      if (maxAmtRaw.includes('.')) {
+        // decimal string — convert to 6-decimal base units
+        const [w, f = ''] = maxAmtRaw.split('.');
+        const fp = f.slice(0, 6).padEnd(6, '0');
+        maxAmountUsdg = BigInt(w || '0') * 1_000_000n + BigInt(fp || '0');
+      } else {
+        maxAmountUsdg = BigInt(maxAmtRaw);
+      }
+      // Accept validHours (convenience) or validUntilIso (ISO string) or validUntilTimestamp (unix seconds)
+      let validUntil: bigint;
+      if (args.validHours !== undefined) {
+        validUntil = BigInt(Math.floor(Date.now() / 1000) + Number(args.validHours) * 3600);
+      } else if (args.validUntilTimestamp !== undefined) {
+        validUntil = BigInt(String(args.validUntilTimestamp));
+      } else {
+        const validUntilIso = String(args.validUntilIso ?? '');
+        const validUntilMs = Date.parse(validUntilIso);
+        if (isNaN(validUntilMs)) throw new Error(`provide validHours, validUntilIso, or validUntilTimestamp`);
+        validUntil = BigInt(Math.floor(validUntilMs / 1000));
+      }
       const nonce = args.nonce ? BigInt(String(args.nonce)) : BigInt(Date.now());
-
-      const validUntilMs = Date.parse(validUntilIso);
-      if (isNaN(validUntilMs)) throw new Error(`invalid validUntilIso: ${validUntilIso}`);
-      const validUntil = BigInt(Math.floor(validUntilMs / 1000));
 
       const { mandate, typedData, hash } = mandateEngine.createMandate({
         spender, merchant, maxAmountUsdg, validUntil, nonce,
@@ -1970,7 +1987,17 @@ async function callTool(name: string, args: Record<string, any>): Promise<unknow
       const { isAddress: _isAddr } = await import('./chain.js');
       const spender = String(args.spender ?? '').toLowerCase();
       const merchant = String(args.merchant ?? '').toLowerCase();
-      const maxAmountUsdg = BigInt(String(args.maxAmountUsdg ?? '0'));
+      // maxAmountUsdg accepts human decimal ("10.00") or base units ("10000000")
+      const maxAmtRaw = String(args.maxAmountUsdg ?? '0');
+      let maxAmountUsdg: bigint;
+      if (maxAmtRaw.includes('.')) {
+        // decimal string — convert to 6-decimal base units
+        const [w, f = ''] = maxAmtRaw.split('.');
+        const fp = f.slice(0, 6).padEnd(6, '0');
+        maxAmountUsdg = BigInt(w || '0') * 1_000_000n + BigInt(fp || '0');
+      } else {
+        maxAmountUsdg = BigInt(maxAmtRaw);
+      }
       const validUntil = BigInt(String(args.validUntil ?? '0'));
       const nonce = BigInt(String(args.nonce ?? '0'));
       const signature = String(args.signature ?? '');
