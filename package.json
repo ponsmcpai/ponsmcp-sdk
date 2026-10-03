@@ -1,6 +1,6 @@
 {
   "name": "@ponsmcp/sdk",
-  "version": "2.2.0",
+  "version": "2.2.1",
   "description": "PonsMCP SDK + MCP server - autonomous agent payments (MPP) settled in USDG on Robinhood Chain 4663, with pons launch intelligence tools.",
   "type": "module",
   "main": "dist/index.js",
@@ -20,7 +20,7 @@
     "test:unit": "node --test test/units/",
     "test:security": "node --test test/security.test.mjs",
     "test:serial": "node test/serial_suite.mjs",
-    "test:all": "npm run test:unit && npm run test:security && npm run test:serial",
+    "test:all": "npm run test:unit && npm run test:security && node --test test/new_tools.test.mjs && npm run test:serial",
     "test:coverage": "c8 --reporter=lcov --reporter=text node --test test/units/ test/security.test.mjs"
   },
   "keywords": [

@@ -15,7 +15,7 @@ import { X402Client } from './x402.js';
 import { PolicyEngine } from './policy.js';
 import { STOCK_TOKENS, STOCK_BY_ADDRESS, resolveStock, isGradeA, isEarlyWatch } from './stocks.js';
 
-const VERSION = '2.2.0';
+const VERSION = '2.2.1';
 // Shared policy engine for pons_send_token and pons_send_eth — same caps as pons_pay.
 const sharedPolicy = new PolicyEngine();
 
@@ -1032,6 +1032,7 @@ async function callTool(name: string, args: Record<string, any>): Promise<unknow
     case 'pons_pay_batch': {
       const payments: Array<{ payTo: string; amountUsd: string }> = Array.isArray(args.payments) ? args.payments : [];
       if (payments.length === 0) throw new Error('payments array is empty');
+      if (payments.length > 50) throw new Error(`payments array too large: ${payments.length} (max 50 per batch)`);
       const maxTotalUsd = typeof args.maxTotalUsd === 'number' ? args.maxTotalUsd : 50;
       // dryRun defaults to true — must be explicitly set to false to broadcast
       const dryRun: boolean = args.dryRun === false ? false : true;
@@ -1141,6 +1142,14 @@ async function callTool(name: string, args: Record<string, any>): Promise<unknow
     case 'x402_health': {
       const url = String(args.url ?? '');
       if (!/^https?:\/\//i.test(url)) throw new Error(`invalid URL: ${url}`);
+      // SSRF guard: block private/loopback/link-local targets by hostname and literal IP
+      let parsedHost = '';
+      try { parsedHost = new URL(url).hostname.toLowerCase(); } catch { throw new Error(`invalid URL: ${url}`); }
+      const PRIVATE_HOSTS = ['localhost', '127.0.0.1', '0.0.0.0', '::1', '169.254.169.254', 'metadata.google.internal'];
+      const isPrivateIp = /^10\./.test(parsedHost) || /^192\.168\./.test(parsedHost) || /^172\.(1[6-9]|2\d|3[01])\./.test(parsedHost) || /^127\./.test(parsedHost) || /^169\.254\./.test(parsedHost) || parsedHost.endsWith('.internal') || parsedHost.endsWith('.local');
+      if (PRIVATE_HOSTS.includes(parsedHost) || isPrivateIp) {
+        throw new Error(`blocked: ${parsedHost} is a private/internal address (SSRF protection)`);
+      }
       const TIMEOUT_MS = 8_000;
       const fetchWithTimeout = async (fetchUrl: string, method: string): Promise<{ status: number; headers: Record<string, string> }> => {
         const controller = new AbortController();
@@ -1394,7 +1403,8 @@ async function callTool(name: string, args: Record<string, any>): Promise<unknow
       const dec = await tokenDecimals(tokenArg).catch(() => 18);
 
       // Parse tokenAmount using BigInt only (no float)
-      const [whTok, frTok = ''] = tokenAmountArg.replace(/[^0-9.]/g, '').split('.');
+      if (!/^\d+(\.\d+)?$/.test(tokenAmountArg.trim())) throw new Error(`invalid tokenAmount format '${tokenAmountArg}' — use decimal string, not scientific notation`);
+      const [whTok, frTok = ''] = tokenAmountArg.trim().split('.');
       const frTokPad = frTok.slice(0, dec).padEnd(dec, '0');
       const tokensIn = BigInt(whTok || '0') * 10n ** BigInt(dec) + BigInt(frTokPad || '0');
       if (tokensIn <= 0n) throw new Error('tokenAmount must be > 0');
