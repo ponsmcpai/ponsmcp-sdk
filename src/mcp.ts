@@ -619,7 +619,15 @@ async function callTool(name: string, args: Record<string, any>): Promise<unknow
         client.getBalance(resolvedToken),
         tokenSymbol(resolvedToken).catch(() => '?'),
       ]);
-      return { wallet: client.address, token: resolvedToken, balance: b.human, decimals: b.decimals, symbol: sym };
+      const wallet = client.address;
+      const result: Record<string, unknown> = { wallet, token: resolvedToken, balance: b.human, decimals: b.decimals, symbol: sym };
+      // Zero balance with a key present almost always means the configured key
+      // belongs to a different (unfunded) wallet — say so explicitly.
+      if (b.raw === 0n && wallet) {
+        const short = `${wallet.slice(0, 5)}...${wallet.slice(-4)}`;
+        result.note = `Wallet ${short} has 0 ${sym === '?' ? 'USDG' : sym}. Fund this address or check PONSMCP_PRIVATE_KEY matches your funded wallet.`;
+      }
+      return result;
     }
     case 'pons_quote': {
       const client = new PonsMCPClient();
