@@ -38,7 +38,8 @@ export interface X402Requirement {
 
 export interface X402PaymentRequired {
   ok: boolean;
-  /** Normalized primary requirement (first entry). */
+  /** Normalized requirement to settle: the first entry PonsMCP can pay (scheme
+   *  'exact', Robinhood Chain, USDG or no asset), else the first entry. */
   requirement?: X402Requirement;
   /** All requirement entries when the server sent multiple accepts. */
   accepts?: X402Requirement[];
@@ -141,6 +142,21 @@ function allRequirementsFromObject(obj: Record<string, unknown>): X402Requiremen
   return out.length ? out : [primary];
 }
 
+const ROBINHOOD_NETWORK_RE = /(4663|robinhood)/i;
+
+/** true when settleX402 can pay this requirement directly (exact USDG on Robinhood Chain). */
+function settleable(req: X402Requirement): boolean {
+  if (req.scheme && req.scheme !== 'exact') return false;
+  if (req.network && !ROBINHOOD_NETWORK_RE.test(req.network)) return false;
+  if (req.asset && isAddress(req.asset) && req.asset.toLowerCase() !== CHAIN.usdg.toLowerCase()) return false;
+  return true;
+}
+
+/** Pick the requirement to settle: the first payable entry of accepts[], else the primary one. */
+function preferSettleable(primary: X402Requirement, accepts: X402Requirement[]): X402Requirement {
+  return accepts.find(settleable) ?? primary;
+}
+
 /**
  * Parse an x402 402 PAYMENT-REQUIRED response into normalized requirements.
  * Checks the X-PAYMENT response header (base64 JSON) first, then the JSON body
@@ -153,10 +169,11 @@ export function parse402Response(response: Response, body?: unknown): X402Paymen
     if (decoded) {
       const req = requirementFromObject(decoded);
       if (req) {
+        const accepts = allRequirementsFromObject(decoded);
         return {
           ok: true,
-          requirement: req,
-          accepts: allRequirementsFromObject(decoded),
+          requirement: preferSettleable(req, accepts),
+          accepts,
           source: 'header',
         };
       }
@@ -169,7 +186,8 @@ export function parse402Response(response: Response, body?: unknown): X402Paymen
     if (obj.accepts || obj.x402Version || obj.payTo || obj.maxAmountRequired) {
       const req = requirementFromObject(obj);
       if (req) {
-        return { ok: true, requirement: req, accepts: allRequirementsFromObject(obj), source: 'body' };
+        const accepts = allRequirementsFromObject(obj);
+        return { ok: true, requirement: preferSettleable(req, accepts), accepts, source: 'body' };
       }
       return { ok: false, source: 'body', error: '402 body looks like x402 but lacks a valid payTo/amount requirement' };
     }
@@ -190,8 +208,6 @@ function amountToUsd(amount: string | number): string | null {
   if (!Number.isFinite(n) || n <= 0) return null;
   return (n / 1e6).toFixed(6).replace(/0+$/, '').replace(/\.$/, '') || '0';
 }
-
-const ROBINHOOD_NETWORK_RE = /(4663|robinhood)/i;
 
 /**
  * Settle an x402 requirement using the wrapped client's pay flow — policy

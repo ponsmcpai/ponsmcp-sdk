@@ -119,3 +119,30 @@ test('curve: zero input yields zero output (no negative)', async () => {
   });
   assert.ok(q.quoteOut >= 0n);
 });
+
+// ── x402 ─────────────────────────────────────────────────────────────────
+const X402_BASE = { scheme: 'exact', network: 'base', maxAmountRequired: '10000', payTo: '0x' + '11'.repeat(20), asset: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913' };
+const X402_RH = { scheme: 'exact', network: 'robinhood-chain', maxAmountRequired: '10000', payTo: '0x' + '22'.repeat(20), asset: '0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168' };
+
+test('x402: a 402 offering several networks settles the Robinhood Chain USDG entry', async () => {
+  const { parse402Response } = await import('../../dist/x402.js');
+  const r = parse402Response(new Response('', { status: 402 }), { x402Version: 1, accepts: [X402_BASE, X402_RH] });
+  assert.equal(r.ok, true);
+  assert.equal(r.accepts.length, 2);
+  assert.equal(r.requirement.network, 'robinhood-chain');
+  assert.equal(r.requirement.payTo, X402_RH.payTo);
+});
+
+test('x402: the same choice is made for the X-PAYMENT header form', async () => {
+  const { parse402Response } = await import('../../dist/x402.js');
+  const header = Buffer.from(JSON.stringify({ x402Version: 1, accepts: [X402_BASE, X402_RH] })).toString('base64');
+  const r = parse402Response(new Response('', { status: 402, headers: { 'X-PAYMENT': header } }));
+  assert.equal(r.source, 'header');
+  assert.equal(r.requirement.payTo, X402_RH.payTo);
+});
+
+test('x402: with no payable entry the first entry is kept (settle still refuses it)', async () => {
+  const { parse402Response } = await import('../../dist/x402.js');
+  const r = parse402Response(new Response('', { status: 402 }), { x402Version: 1, accepts: [X402_BASE, { ...X402_RH, scheme: 'upto' }] });
+  assert.equal(r.requirement.network, 'base');
+});
