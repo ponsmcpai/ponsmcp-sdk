@@ -8,7 +8,7 @@ PonsMCP exposes **27 MCP tools**: 25 pons tools plus 2 x402 compatibility tools.
 | 2 | `pons_price` | none | PONS market snapshot: best pair price, liquidity, 24h change, plus top 5 pairs (DexScreener) |
 | 3 | `pons_launch_info` | `token` (0x addr) | pons v1 launch metadata read from the token contract: canonical pool, fixed supply, logo, description, socials |
 | 4 | `pons_launch_market` | `token` (0x addr) | live DEX pairs for a pons launch token: best pair, price, liquidity, 24h change, top 5 |
-| 5 | `pons_v2_launch` | `token` (0x addr) | pons v2 factory launch record: deployer, paired token, pool fee, supply, restrictions end block |
+| 5 | `pons_v2_launch` | `token` (0x addr) | pons v2 factory launch record: curve, deployer, creator fee recipient, pair token, graduation threshold, pool fee, creator tax, phase, exists |
 | 6 | `pons_v2_snipe_tax` | `curve`, `recipient` | decaying opening snipe tax (bps) a v2 curve would charge a specific recipient right now |
 | 7 | `pons_v2_quote_buy` | `quoteIn`, `quoteReserve`, `tokenReserve`, `sellable`, `feeBps`, `creatorTaxBps`, `rawSnipeBps` | pure curve buy quote: tokens out, fee, tax, snipe tax, refund — no chain reads |
 | 8 | `pons_v2_quote_sell` | `tokensIn`, `quoteReserve`, `tokenReserve`, `feeBps`, `creatorTaxBps` | pure curve sell quote: quote out, fee, tax, net proceeds — no chain reads |

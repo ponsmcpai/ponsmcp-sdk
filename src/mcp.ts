@@ -99,7 +99,7 @@ const TOOLS = [
    */
   {
     name: 'pons_v2_launch',
-    description: 'Read a pons v2 launch record from the factory: deployer, paired token, pool fee, supply, restrictions end block. Read-only; does not launch anything.',
+    description: 'Read a pons v2 launch record from the factory: curve, deployer, creator fee recipient, pair token, graduation threshold, pool fee, creator tax, phase, exists. Read-only; does not launch anything.',
     inputSchema: {
       type: 'object',
       properties: { token: { type: 'string', description: 'pons v2 launch-token address (0x...)' } },
